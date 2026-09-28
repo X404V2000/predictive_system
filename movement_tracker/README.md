@@ -69,6 +69,32 @@ frame (optionally including `time_horizon`). Malformed frames receive an in-band
 
 ## Data
 
-`training_data/h3.6m/` holds Human3.6M motion capture (33 joints × 3 coords at
-50 fps, world coordinates in metres; clip filenames are the action labels). It is
-git-ignored and used for Phase B/C validation and action-model training.
+`training_data/cmu_mocap/` holds CMU Graphics Lab Motion Capture trials in BVH
+format (the cgspeed conversion): walking (007), turning (008), running (009) and
+seated (013, 020) clips at 120 fps. The loader reads each file's own skeleton
+hierarchy, so joint semantics and frame timing come from the data rather than
+assumptions.
+
+Two details the loader encodes explicitly:
+
+- **Unit scale:** one raw BVH unit is 0.05 m, verified against anatomy (the leg
+  chain measures 17.01 units for a ~0.85 m hip-to-ankle length). Treating the
+  values as plain centimetres understates every speed by 5x.
+- **Root trajectory:** only the root joint's global translation is used for
+  trajectory prediction; joint rotations are retained for the behavioural layer.
+
+`tests/test_mocap.py` asserts physical plausibility (walk 0.3–2.0 m/s, run faster
+than walk, seated clips travel < 2 m), which is what detects dataset corruption.
+
+## Tools
+
+```bash
+python3 tools/camera_check.py                    # probe the webcam
+python3 tools/camera_check.py --manual-exposure 100   # restore full FPS in dim light
+python3 tools/camera_check.py --preview          # live window, press q to quit
+```
+
+A UVC camera in dim light lengthens its exposure and silently drops its frame
+rate. On this machine the webcam reported 30 FPS but delivered 7.5 FPS until
+exposure was pinned, at which point it delivered the full 30 FPS.
+
