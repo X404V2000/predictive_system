@@ -80,11 +80,40 @@ Two points matter:
   model gives position variance growing as `dt^4` and velocity as `dt^2`. A
   constant diagonal `Q`, independent of `dt`, is dimensionally wrong and makes
   long-horizon uncertainty explode quadratically faster than reality.
+- **Even a "stationary" person drifts.** A seated or standing human shifts
+  posture, moving the hip at roughly 0.15 m/s. Treating a motionless target as
+  exactly motionless made the 1 s interval over-confident: 95% coverage fell to
+  58% on seated clips. Modelling postural drift as a velocity random walk
+  restores coverage to 97% while leaving walking accuracy unchanged.
 
 `tools/calibrate.py` measures the reported uncertainty against the error actually
 observed on real motion capture, which is how the process-noise values were set.
 At realistic noise the reported standard deviation is within roughly a factor of
 two of observed error.
+
+## Trajectory (multi-step) output
+
+By default a prediction is a single point at one horizon. Adding
+`trajectory=true` returns the whole future path:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/predict?time_horizon=1.0&trajectory=true&trajectory_step=0.25" \
+  -H "Content-Type: application/json" \
+  -d '{"entity_id":"p1","x":0,"y":0.9,"z":0,"timestamp":1700000000}'
+```
+
+Each point carries its own position and uncertainty. Three properties hold:
+
+- **The final point equals the scalar fields.** One prediction described two
+  ways; they can never disagree.
+- **Uncertainty is evaluated per step**, not interpolated from the final value.
+  Position error integrates twice over time, so it does not grow linearly.
+- **Every point is projected from the current state**, not chained onto the
+  previous sample. Chaining would compound the turn approximation and drift off
+  the true arc.
+
+`trajectory_step` must be at least 0.02 s and no larger than the horizon, and a
+trajectory is capped at 200 points.
 
 ## Turning motion
 
@@ -123,7 +152,7 @@ horizon is capped at 2 s.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 73 tests
+pytest                                   # 83 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 

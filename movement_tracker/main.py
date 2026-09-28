@@ -44,17 +44,54 @@ def _validate_horizon(time_horizon: float) -> float:
     return time_horizon
 
 
+MIN_TRAJECTORY_STEP: float = 0.02
+
+
+def _validate_trajectory_step(step: float, horizon: float) -> float:
+    """
+    Validates the sampling interval for a requested trajectory.
+
+    Raises ValueError so both transports can render the failure in their own
+    format.
+    """
+    if step < MIN_TRAJECTORY_STEP:
+        raise ValueError(
+            f"trajectory_step must be at least {MIN_TRAJECTORY_STEP} seconds."
+        )
+    if step > horizon:
+        raise ValueError(
+            "trajectory_step must not exceed the prediction horizon, otherwise "
+            "the trajectory would contain only its endpoints."
+        )
+    return step
+
+
 @app.post("/predict", response_model=PredictionOutput)
-async def compute_prediction(telemetry: TelemetryInput, time_horizon: float = 1.0):
+async def compute_prediction(
+    telemetry: TelemetryInput,
+    time_horizon: float = 1.0,
+    trajectory: bool = False,
+    trajectory_step: float = 0.2,
+):
     """
     HTTP REST endpoint to execute point-in-time trajectory predictions.
+
+    Set `trajectory=true` to receive the whole future path sampled every
+    `trajectory_step` seconds, each point with its own uncertainty.
     """
     try:
         _validate_horizon(time_horizon)
+        if trajectory:
+            _validate_trajectory_step(trajectory_step, time_horizon)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return tracker_manager.process_telemetry(telemetry=telemetry, dt=time_horizon)
+    return tracker_manager.process_telemetry(
+        telemetry=telemetry,
+        dt=time_horizon,
+        trajectory=trajectory,
+        trajectory_step=trajectory_step,
+    )
 
 
 @app.websocket("/ws/telemetry")
@@ -81,6 +118,12 @@ async def websocket_telemetry_stream(websocket: WebSocket):
                 time_horizon = float(data_dict.pop("time_horizon", 1.0))
                 _validate_horizon(time_horizon)
 
+                # Optional trajectory request, sampled every trajectory_step.
+                want_trajectory = bool(data_dict.pop("trajectory", False))
+                trajectory_step = float(data_dict.pop("trajectory_step", 0.2))
+                if want_trajectory:
+                    _validate_trajectory_step(trajectory_step, time_horizon)
+
                 # Validate input payload against Pydantic schema
                 telemetry = TelemetryInput(**data_dict)
             except (json.JSONDecodeError, ValueError, TypeError, ValidationError) as exc:
@@ -89,7 +132,10 @@ async def websocket_telemetry_stream(websocket: WebSocket):
 
             # Process state update and compute spatial projection
             prediction = tracker_manager.process_telemetry(
-                telemetry=telemetry, dt=time_horizon
+                telemetry=telemetry,
+                dt=time_horizon,
+                trajectory=want_trajectory,
+                trajectory_step=trajectory_step,
             )
 
             # Send serialized prediction back across WebSocket link

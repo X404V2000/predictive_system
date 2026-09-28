@@ -47,6 +47,45 @@ class TelemetryInput(BaseModel):
     )
 
 
+class TrajectoryPoint(BaseModel):
+    """
+    One sample along a predicted future path.
+
+    Each point carries its own uncertainty because confidence decays with the
+    horizon, and it decays non-linearly: position error integrates twice over
+    time. A caller drawing a future path can therefore show not just where the
+    target is expected to be, but how sharply that expectation blurs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    horizon_seconds: float = Field(
+        ..., ge=0.0, description="Seconds ahead of the current observation"
+    )
+    timestamp: float = Field(
+        ..., description="Absolute time corresponding to this point"
+    )
+    x: float = Field(..., description="Predicted X coordinate, metres")
+    y: float = Field(..., description="Predicted Y coordinate, metres")
+    z: float = Field(..., description="Predicted Z coordinate, metres")
+
+    sigma_x: float = Field(
+        ..., ge=0.0, description="Position standard deviation along X, metres"
+    )
+    sigma_y: float = Field(
+        ..., ge=0.0, description="Position standard deviation along Y, metres"
+    )
+    sigma_z: float = Field(
+        ..., ge=0.0, description="Position standard deviation along Z, metres"
+    )
+    position_std: float = Field(
+        ..., ge=0.0, description="Combined position standard deviation, metres"
+    )
+    confidence_radius_95: float = Field(
+        ..., ge=0.0, description="Radius of the 95% confidence sphere, metres"
+    )
+
+
 class PredictionOutput(BaseModel):
     """
     Represents extrapolated future spatial metrics for a targeted entity.
@@ -117,5 +156,15 @@ class PredictionOutput(BaseModel):
             "constant_velocity, constant_acceleration or maneuvering. Larger "
             "process noise means a longer assumed correlation, hence wider "
             "uncertainty."
+        ),
+    )
+
+    trajectory: list[TrajectoryPoint] | None = Field(
+        default=None,
+        description=(
+            "Optional full future path sampled from now to the horizon, each "
+            "point with its own uncertainty. Present only when the caller "
+            "requests a trajectory; the single-point fields above always "
+            "describe the final horizon."
         ),
     )

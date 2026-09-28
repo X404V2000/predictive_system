@@ -393,7 +393,11 @@ class EntityTracker:
     # -- main entry point --------------------------------------------------
 
     def process_telemetry(
-        self, telemetry: TelemetryInput, dt: float = 1.0
+        self,
+        telemetry: TelemetryInput,
+        dt: float = 1.0,
+        trajectory: bool = False,
+        trajectory_step: float = 0.2,
     ) -> PredictionOutput:
         """
         Updates the filter for a target entity and computes a future prediction.
@@ -409,6 +413,10 @@ class EntityTracker:
 
         Passing the prediction horizon into the filter's integration step
         over-integrates the state and silently corrupts the covariance.
+
+        When `trajectory` is true, the result also carries the full future path
+        sampled every `trajectory_step` seconds up to `dt`, each point with its
+        own uncertainty.
         """
         entity_id = telemetry.entity_id
         now = time.monotonic()
@@ -484,7 +492,7 @@ class EntityTracker:
             motion_model = "unfiltered"
             yaw_rate = telemetry.yaw_rate
 
-        return predictor.predict_state(
+        result = predictor.predict_state(
             entity_id=entity_id,
             x=x,
             y=y,
@@ -502,3 +510,31 @@ class EntityTracker:
             motion_model=motion_model,
             vertical_axis=self.vertical_axis,
         )
+
+        if trajectory:
+            position = np.array([x, y, z], dtype=np.float64)
+            velocity = np.array([vx, vy, vz], dtype=np.float64)
+            acceleration = np.array([ax, ay, az], dtype=np.float64)
+
+            if self.filter_enabled:
+                # Uncertainty is queried per step: it integrates twice over time,
+                # so it cannot be interpolated from the final value alone.
+                covariance_fn = ekf.propagate_position_covariance
+            else:
+                covariance_fn = lambda _horizon: None  # noqa: E731
+
+            result.trajectory = predictor.predict_trajectory(
+                entity_id=entity_id,
+                position=position,
+                velocity=velocity,
+                acceleration=acceleration,
+                yaw_rate=yaw_rate,
+                timestamp=telemetry.timestamp,
+                max_horizon=dt,
+                step=trajectory_step,
+                covariance_fn=covariance_fn,
+                motion_model=motion_model,
+                vertical_axis=self.vertical_axis,
+            )
+
+        return result
