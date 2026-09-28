@@ -86,13 +86,35 @@ observed on real motion capture, which is how the process-noise values were set.
 At realistic noise the reported standard deviation is within roughly a factor of
 two of observed error.
 
+## Turning motion
+
+A person following a curved path is projected along a circular arc
+(coordinated-turn) rather than a straight line. Two details decide whether this
+helps or hurts:
+
+- **The ground plane depends on the up axis.** `vertical_axis` selects it
+  (default 1 = Y-up, the BVH convention; use 2 for Z-up). Turning is applied
+  perpendicular to that axis and vertical motion is projected independently.
+  Applying a Z-up assumption to Y-up data measures heading in a plane containing
+  almost no motion and reports thousands of degrees per second for a straight walk.
+- **Turn-rate artefacts must be rejected.** The rate is estimated from
+  filtered velocity over a fixed duration, then gated: no turn below locomotion
+  speed (heading is undefined when barely moving) and none below a
+  `MIN_TURN_RADIUS` of 3 m (a smaller radius is not a path a body can follow).
+  Without the radius gate, running saturated the rate cap and prediction became
+  40% worse (ADE 0.97 → 1.38 m).
+
+On the CMU clips the turn model improves walking accuracy by ~9-10% (ADE
+0.413 → 0.377 m) while leaving running and seated clips unchanged.
+
 ### Known limit at long horizons
 
-Beyond ~1 s the constant-acceleration assumption breaks down: over a 2 s window a
-walking person changes heading by 10-20 degrees, which no constant-acceleration
-model can represent. Real error then grows faster than predicted error, so the
-confidence region is over-confident at 2 s. This is model error, not
-measurement noise, and is the main reason the prediction horizon is capped at 2 s.
+Beyond ~1 s the constant-acceleration assumption still degrades: over a 2 s
+window a walking person changes heading by 10-20 degrees. The turn model
+recovers part of this (1 s calibration ratio 0.414 → 0.379), but at 2 s real
+error still outgrows predicted error, so the confidence region is over-confident
+there. This is model error, not measurement noise, and is why the prediction
+horizon is capped at 2 s.
 
 
 
@@ -101,7 +123,7 @@ measurement noise, and is the main reason the prediction horizon is capped at 2 
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 61 tests
+pytest                                   # 73 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 

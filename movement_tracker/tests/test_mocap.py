@@ -83,20 +83,49 @@ def test_yaw_rate_zero_when_stationary() -> None:
     assert np.allclose(rate, 0.0)
 
 
-def test_yaw_rate_positive_for_counterclockwise_turn() -> None:
-    """A left-hand (counterclockwise) turn must produce a positive rate."""
+def test_yaw_rate_recovers_a_known_turn_rate() -> None:
+    """
+    A circular path with known angular rate must be recovered.
+
+    The default vertical axis is Y (the BVH convention), so the ground plane is
+    X-Z and the turn is traced there.
+    """
     dt = 0.01
-    frames = 200
+    frames = 300
     radius = 5.0
     omega_true = 0.5
     t = np.arange(frames) * dt
-    # Circular motion in the X-Y plane, counterclockwise.
+    # Circular motion in the X-Z ground plane, counterclockwise.
     vx = -radius * omega_true * np.sin(omega_true * t)
-    vy = radius * omega_true * np.cos(omega_true * t)
-    velocities = np.stack([vx, vy, np.zeros_like(vx)], axis=1)
+    vz = radius * omega_true * np.cos(omega_true * t)
+    velocities = np.stack([vx, np.zeros_like(vx), vz], axis=1)
 
-    rate = yaw_rate(velocities, dt)
-    assert np.isclose(float(np.median(rate[10:-10])), omega_true, atol=0.05)
+    rate = yaw_rate(velocities, dt, min_horizontal_speed=0.0)
+    assert np.isclose(float(np.median(rate[20:-20])), omega_true, atol=0.05)
+
+
+def test_yaw_rate_is_zero_when_stationary() -> None:
+    """Heading is undefined without motion, so no turn may be reported."""
+    velocities = np.zeros((50, 3))
+    assert np.allclose(yaw_rate(velocities, 0.01), 0.0)
+
+
+def test_yaw_rate_ignores_posture_shift_of_a_seated_target() -> None:
+    """
+    A seated person shifting posture moves slowly and erratically. Heading from
+    that motion is noise, so the locomotion gate must report no turn.
+    """
+    rng = np.random.default_rng(0)
+    # ~0.15 m/s of random postural movement, well below locomotion speed.
+    velocities = rng.normal(0.0, 0.15, size=(200, 3))
+
+    rate = yaw_rate(velocities, 0.01)
+    assert np.allclose(rate, 0.0)
+
+
+def test_yaw_rate_rejects_unknown_vertical_axis() -> None:
+    with pytest.raises(ValueError):
+        yaw_rate(np.zeros((10, 3)), 0.01, vertical_axis=3)
 
 
 # --- BVH loading (requires the dataset) -----------------------------------

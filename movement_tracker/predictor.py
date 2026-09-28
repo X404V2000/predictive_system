@@ -40,6 +40,7 @@ class KinematicPredictor:
         dt: float,
         position_covariance: np.ndarray | None = None,
         motion_model: str = "constant_acceleration",
+        vertical_axis: int = 1,
     ) -> PredictionOutput:
         """
         Projects the state forward by `dt` seconds and reports the result with
@@ -49,22 +50,55 @@ class KinematicPredictor:
         to the horizon. When omitted (for example when filtering is disabled), a
         zero covariance is reported, which correctly signals "no estimate of
         uncertainty" rather than inventing one.
+
+        `vertical_axis` selects which coordinate is up. Turning is applied in the
+        plane perpendicular to it, so the model works under either the Y-up
+        convention used by BVH exports or a Z-up convention. Vertical motion is
+        projected independently of the turn, because turning happens in the
+        ground plane and does not rotate gravity.
         """
         omega = yaw_rate
 
-        if abs(omega) > 1e-5:
-            # Coordinated Turn model: constant speed along a circular arc.
-            sin_w_dt = np.sin(omega * dt)
-            cos_w_dt = np.cos(omega * dt)
+        components = np.array([x, y, z], dtype=np.float64)
+        velocity = np.array([vx, vy, vz], dtype=np.float64)
+        acceleration = np.array([ax, ay, az], dtype=np.float64)
 
-            pred_x = x + (vx / omega) * sin_w_dt - (vy / omega) * (1.0 - cos_w_dt)
-            pred_y = y + (vx / omega) * (1.0 - cos_w_dt) + (vy / omega) * sin_w_dt
-            pred_z = z + (vz * dt) + (0.5 * az * (dt**2))
+        ground_axes = [axis for axis in (0, 1, 2) if axis != vertical_axis]
+        up = vertical_axis
+        e1, e2 = ground_axes[0], ground_axes[1]
+
+        projected = np.empty(3, dtype=np.float64)
+
+        if abs(omega) > 1e-5:
+            # Coordinated turn: constant speed along a circular arc in the ground
+            # plane. Rotating the horizontal pair by omega*dt places the target
+            # on the arc, matching how a person follows a curved walking path.
+            angle = omega * dt
+            sin_a, cos_a = np.sin(angle), np.cos(angle)
+
+            v1, v2 = velocity[e1], velocity[e2]
+            # Rotation in the (e1, e2) plane about the vertical axis.
+            projected[e1] = components[e1] + (v1 * sin_a + v2 * (cos_a - 1.0)) / omega
+            projected[e2] = components[e2] + (v1 * (1.0 - cos_a) + v2 * sin_a) / omega
         else:
-            # Constant Acceleration model.
-            pred_x = x + (vx * dt) + (0.5 * ax * (dt**2))
-            pred_y = y + (vy * dt) + (0.5 * ay * (dt**2))
-            pred_z = z + (vz * dt) + (0.5 * az * (dt**2))
+            # Constant acceleration in the ground plane.
+            projected[e1] = (
+                components[e1]
+                + velocity[e1] * dt
+                + 0.5 * acceleration[e1] * dt**2
+            )
+            projected[e2] = (
+                components[e2]
+                + velocity[e2] * dt
+                + 0.5 * acceleration[e2] * dt**2
+            )
+
+        # Vertical motion is independent of the turn.
+        projected[up] = (
+            components[up] + velocity[up] * dt + 0.5 * acceleration[up] * dt**2
+        )
+
+        pred_x, pred_y, pred_z = float(projected[0]), float(projected[1]), float(projected[2])
 
         future_timestamp: float = timestamp + dt
 

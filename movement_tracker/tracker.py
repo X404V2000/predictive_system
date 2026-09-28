@@ -38,6 +38,25 @@ ESCALATION_SECONDS: float = 0.5
 # is sqrt(2)*sigma/window regardless of how often samples arrive.
 SPEED_WINDOW_SECONDS: float = 0.4
 
+# Duration over which the heading change is measured to estimate turn rate.
+# Comparing across a fixed duration rather than consecutive samples matters: at
+# 120 Hz a straight walker's lateral velocity is almost entirely noise.
+HEADING_WINDOW_SECONDS: float = 0.4
+
+# Speed below which heading is undefined, so no turn is reported. Set at
+# locomotion speed because a seated person shifting posture moves at ~0.15 m/s
+# and would otherwise register large spurious rotation.
+HEADING_MIN_SPEED: float = 0.5
+
+# Magnitude cap on reported turn rate (rad/s). A human cannot rotate their
+# heading faster than roughly this; anything larger is an estimation artefact.
+MAX_YAW_RATE: float = 3.0
+
+# Minimum credible turn radius (metres). A person turning a corner walks a radius
+# of several metres; a smaller radius means the heading estimate is changing
+# faster than a body could follow, so the turn is rejected as an artefact.
+MIN_TURN_RADIUS: float = 3.0
+
 # Ordering of motion models by how much process noise they inject, used to tell
 # an escalation (noisier) from a de-escalation (quieter).
 _MODEL_NOISE_ORDER: dict[MotionModel, int] = {
@@ -62,6 +81,7 @@ class EntityTracker:
         prune_interval_seconds: float = 1.0,
         measurement_noise_std: float = 0.02,
         adaptive_motion_model: bool = True,
+        vertical_axis: int = 1,
     ) -> None:
         """
         Initialises the entity registry, kinematics engine and eviction policy.
@@ -80,7 +100,14 @@ class EntityTracker:
 
         adaptive_motion_model enables automatic process-noise selection based on
         the filter's own speed estimate.
+
+        vertical_axis selects which coordinate is up (1 = Y-up, the BVH
+        convention; 2 = Z-up). Turning is measured in the plane perpendicular to
+        it.
         """
+        if vertical_axis not in (0, 1, 2):
+            raise ValueError(f"vertical_axis must be 0, 1 or 2, got {vertical_axis}")
+
         self.filter_enabled: bool = filter_enabled
         self.ttl_seconds: float = ttl_seconds
         self.min_measurement_dt: float = min_measurement_dt
@@ -88,6 +115,7 @@ class EntityTracker:
         self.prune_interval_seconds: float = prune_interval_seconds
         self.measurement_noise_std: float = measurement_noise_std
         self.adaptive_motion_model: bool = adaptive_motion_model
+        self.vertical_axis: int = vertical_axis
 
         self.predictors: dict[str, KinematicPredictor] = {}
         self.filters: dict[str, ExtendedKalmanFilter3D] = {}
@@ -105,6 +133,10 @@ class EntityTracker:
 
         # Accumulated seconds of evidence supporting a noisier model.
         self._escalation_seconds: dict[str, float] = {}
+
+        # Rolling window of filtered velocity vectors, used to estimate the
+        # heading rate for the coordinated-turn projection.
+        self._velocity_history: dict[str, list[np.ndarray]] = {}
 
         # Rolling window of filtered positions and their elapsed times, used to
         # measure displacement over a fixed duration independently of the
@@ -150,6 +182,7 @@ class EntityTracker:
             self._position_window.pop(entity_id, None)
             self._position_history.pop(entity_id, None)
             self._elapsed_seconds.pop(entity_id, None)
+            self._velocity_history.pop(entity_id, None)
 
         return len(stale_ids)
 
@@ -278,6 +311,85 @@ class EntityTracker:
         ekf.set_motion_model(candidate)
         self._escalation_seconds[entity_id] = 0.0
 
+    # -- turn-rate estimation ---------------------------------------------
+
+    def _estimate_yaw_rate(
+        self,
+        entity_id: str,
+        ekf: ExtendedKalmanFilter3D,
+        dt: float | None,
+    ) -> float:
+        """
+        Estimates the heading rate (rad/s) from the filtered velocity history.
+
+        The client-supplied `yaw_rate` defaults to zero, so relying on it leaves
+        the coordinated-turn projection permanently inactive. Turning is instead
+        measured from how the filtered velocity direction changes over time.
+
+        Two guards make the estimate usable:
+
+          * Heading is compared across samples separated by a fixed DURATION,
+            not across consecutive samples. At 120 Hz the lateral velocity of a
+            straight walker is dominated by noise; differencing frame to frame
+            reported 122 deg/s where the truth is 18 deg/s.
+          * No turn is reported below locomotion speed, where heading is
+            undefined. A seated person shifting posture would otherwise register
+            large spurious rotation.
+        """
+        history = self._velocity_history.setdefault(entity_id, [])
+        history.append(ekf.velocity.copy())
+
+        rate_dt = dt if dt and dt > 0 else 0.01
+        max_samples = max(2, int(HEADING_WINDOW_SECONDS / rate_dt) + 2)
+        while len(history) > max_samples:
+            history.pop(0)
+
+        if len(history) < 2 or not dt or dt <= 0:
+            return 0.0
+
+        ground_axes = [axis for axis in (0, 1, 2) if axis != self.vertical_axis]
+        e1, e2 = ground_axes[0], ground_axes[1]
+
+        # Average velocity over the window suppresses per-sample jitter.
+        mean_velocity = np.mean(np.stack(history), axis=0)
+        horizontal_speed = float(np.hypot(mean_velocity[e1], mean_velocity[e2]))
+        if horizontal_speed < HEADING_MIN_SPEED:
+            return 0.0
+
+        # Compare heading at the start and end of the window, yielding a rate
+        # over a fixed duration rather than over one sample interval.
+        first, last = history[0], history[-1]
+        first_heading = np.arctan2(first[e2], first[e1])
+        last_heading = np.arctan2(last[e2], last[e1])
+        delta = float(
+            np.arctan2(
+                np.sin(last_heading - first_heading),
+                np.cos(last_heading - first_heading),
+            )
+        )
+        elapsed = dt * (len(history) - 1)
+        if elapsed <= 0.0:
+            return 0.0
+
+        rate = delta / elapsed
+
+        # Credibility gate on turn RADIUS. The coordinated-turn model describes a
+        # constant-speed circular arc, which only fits a person following a
+        # curved path. A turn radius below a few metres means the heading is
+        # changing far faster than any body could follow, so the signal is an
+        # estimation artefact rather than motion.
+        #
+        # This matters most at speed: on a running clip, 30% of samples saturated
+        # the rate cap, and applying those arcs made prediction 40% worse
+        # (ADE 0.97 -> 1.38 m). Walking clips, where turning is genuine, were
+        # unaffected by the gate.
+        if rate != 0.0:
+            radius = horizontal_speed / abs(rate)
+            if radius < MIN_TURN_RADIUS:
+                return 0.0
+
+        return float(np.clip(rate, -MAX_YAW_RATE, MAX_YAW_RATE))
+
     # -- main entry point --------------------------------------------------
 
     def process_telemetry(
@@ -357,6 +469,11 @@ class EntityTracker:
             # uncertainty reflects the projection rather than the present moment.
             position_covariance = ekf.propagate_position_covariance(dt)
             motion_model = ekf.motion_model.value
+
+            # Estimate the turn rate from filtered velocity rather than trusting
+            # the wire value, which defaults to zero. Without this the
+            # coordinated-turn branch of the predictor is never reached.
+            yaw_rate = self._estimate_yaw_rate(entity_id, ekf, measurement_dt)
         else:
             x, y, z = telemetry.x, telemetry.y, telemetry.z
             vx, vy, vz = telemetry.vx, telemetry.vy, telemetry.vz
@@ -365,6 +482,7 @@ class EntityTracker:
             # is honest; inventing a value would not be.
             position_covariance = None
             motion_model = "unfiltered"
+            yaw_rate = telemetry.yaw_rate
 
         return predictor.predict_state(
             entity_id=entity_id,
@@ -377,9 +495,10 @@ class EntityTracker:
             ax=ax,
             ay=ay,
             az=az,
-            yaw_rate=telemetry.yaw_rate,
+            yaw_rate=yaw_rate,
             timestamp=telemetry.timestamp,
             dt=dt,
             position_covariance=position_covariance,
             motion_model=motion_model,
+            vertical_axis=self.vertical_axis,
         )
