@@ -114,16 +114,44 @@ def test_covariance_stays_symmetric_and_positive_definite() -> None:
 
 
 def test_motion_model_switch_changes_process_noise() -> None:
-    """Switching model recomputes Q without discarding the state."""
+    """Switching model reduces the process noise without discarding the state."""
     ekf = ExtendedKalmanFilter3D()
     ekf.x[0, 0] = 3.0
 
-    noise_before = float(ekf.Q[0, 0])
+    dt = 0.05
+    noise_before = float(ekf._process_noise(dt)[6, 6])  # acceleration variance
     ekf.set_motion_model(MotionModel.STATIONARY)
-    noise_after = float(ekf.Q[0, 0])
+    noise_after = float(ekf._process_noise(dt)[6, 6])
 
     assert noise_after < noise_before
     assert ekf.x[0, 0] == 3.0
+
+
+def test_process_noise_scales_with_step_length() -> None:
+    """
+    Position variance from process noise must grow as dt^4 and velocity as dt^2.
+
+    A constant Q independent of dt is dimensionally wrong and makes long-horizon
+    uncertainty explode far faster than reality.
+    """
+    ekf = ExtendedKalmanFilter3D(motion_model=MotionModel.CONSTANT_ACCELERATION)
+
+    small = ekf._process_noise(0.1)
+    large = ekf._process_noise(0.2)
+
+    # Position variance ratio should be (0.2/0.1)^4 = 16
+    assert large[0, 0] / small[0, 0] == pytest.approx(16.0, rel=1e-6)
+    # Velocity variance ratio should be (0.2/0.1)^2 = 4
+    assert large[3, 3] / small[3, 3] == pytest.approx(4.0, rel=1e-6)
+
+
+def test_process_noise_couples_position_and_velocity() -> None:
+    """Position and velocity error must be correlated, requiring off-diagonals."""
+    ekf = ExtendedKalmanFilter3D(motion_model=MotionModel.CONSTANT_ACCELERATION)
+    q = ekf._process_noise(0.1)
+
+    assert q[0, 3] != 0.0
+    assert q[0, 3] == pytest.approx(q[3, 0])
 
 
 def test_reset_clears_state() -> None:

@@ -352,10 +352,19 @@ class EntityTracker:
             x, y, z = state[0], state[1], state[2]
             vx, vy, vz = state[3], state[4], state[5]
             ax, ay, az = state[6], state[7], state[8]
+
+            # Propagate the covariance to the prediction horizon, so the reported
+            # uncertainty reflects the projection rather than the present moment.
+            position_covariance = ekf.propagate_position_covariance(dt)
+            motion_model = ekf.motion_model.value
         else:
             x, y, z = telemetry.x, telemetry.y, telemetry.z
             vx, vy, vz = telemetry.vx, telemetry.vy, telemetry.vz
             ax, ay, az = telemetry.ax, telemetry.ay, telemetry.az
+            # Filtering is off, so no uncertainty is estimated. Reporting zeros
+            # is honest; inventing a value would not be.
+            position_covariance = None
+            motion_model = "unfiltered"
 
         return predictor.predict_state(
             entity_id=entity_id,
@@ -371,4 +380,6 @@ class EntityTracker:
             yaw_rate=telemetry.yaw_rate,
             timestamp=telemetry.timestamp,
             dt=dt,
+            position_covariance=position_covariance,
+            motion_model=motion_model,
         )

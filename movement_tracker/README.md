@@ -58,13 +58,50 @@ move at 0.28 m/s when sampled at 10 Hz but 3.4 m/s at 120 Hz. Measuring
 displacement over a fixed window divides that noise by a fixed duration, making
 classification and velocity estimation independent of the frame rate.
 
+## Uncertainty
+
+A prediction is a distribution, not a point. Every response carries:
+
+| Field | Meaning |
+|---|---|
+| `sigma_x/y/z` | per-axis position standard deviation at the horizon, metres |
+| `position_std` | `sqrt(sigma_x^2 + sigma_y^2 + sigma_z^2)` |
+| `confidence_radius_95` | radius of the 95% confidence sphere |
+| `position_covariance` | full 3x3 covariance, row-major (9 values) |
+| `motion_model` | active model, which sets the process-noise profile |
+
+Two points matter:
+
+- **Uncertainty is propagated, not copied.** The covariance is integrated
+  forward through the motion model to the horizon. Position error integrates
+  twice over time, so a 1 s projection is far less certain than a 0.1 s one;
+  reporting the present covariance would understate it by orders of magnitude.
+- **Process noise scales with the step.** The discrete white-noise-acceleration
+  model gives position variance growing as `dt^4` and velocity as `dt^2`. A
+  constant diagonal `Q`, independent of `dt`, is dimensionally wrong and makes
+  long-horizon uncertainty explode quadratically faster than reality.
+
+`tools/calibrate.py` measures the reported uncertainty against the error actually
+observed on real motion capture, which is how the process-noise values were set.
+At realistic noise the reported standard deviation is within roughly a factor of
+two of observed error.
+
+### Known limit at long horizons
+
+Beyond ~1 s the constant-acceleration assumption breaks down: over a 2 s window a
+walking person changes heading by 10-20 degrees, which no constant-acceleration
+model can represent. Real error then grows faster than predicted error, so the
+confidence region is over-confident at 2 s. This is model error, not
+measurement noise, and is the main reason the prediction horizon is capped at 2 s.
+
+
 
 ## Running
 
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 36 tests
+pytest                                   # 61 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 
@@ -75,6 +112,12 @@ python3 tools/benchmark.py                       # ADE/FDE vs baselines, all cli
 python3 tools/benchmark.py --horizon 0.25
 python3 tools/benchmark.py --noise 0.10          # heavier sensor noise
 python3 tools/benchmark.py --subjects 007 009    # walking + running only
+```
+
+### Calibration against real motion capture
+
+```bash
+python3 tools/calibrate.py     # reported uncertainty vs observed error
 ```
 
 On real CMU walking clips at a realistic 0.02 m sensor noise the filtered

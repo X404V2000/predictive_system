@@ -50,6 +50,10 @@ class TelemetryInput(BaseModel):
 class PredictionOutput(BaseModel):
     """
     Represents extrapolated future spatial metrics for a targeted entity.
+
+    A prediction is a distribution, not a point. The uncertainty fields describe
+    how confident the estimate is at the horizon; they grow with the horizon
+    because position error accumulates as the projection lengthens.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -71,4 +75,47 @@ class PredictionOutput(BaseModel):
     )
     target_timestamp: float = Field(
         ..., description="Target timestamp corresponding to the prediction"
+    )
+
+    # --- uncertainty -------------------------------------------------------
+    sigma_x: float = Field(
+        ..., ge=0.0, description="Position standard deviation along X at the horizon, metres"
+    )
+    sigma_y: float = Field(
+        ..., ge=0.0, description="Position standard deviation along Y at the horizon, metres"
+    )
+    sigma_z: float = Field(
+        ..., ge=0.0, description="Position standard deviation along Z at the horizon, metres"
+    )
+    position_std: float = Field(
+        ...,
+        ge=0.0,
+        description=(
+            "Radius of one standard deviation: sqrt(sigma_x^2 + sigma_y^2 + "
+            "sigma_z^2), metres"
+        ),
+    )
+    confidence_radius_95: float = Field(
+        ...,
+        ge=0.0,
+        description=(
+            "Radius of the 95% confidence sphere around the predicted point, "
+            "metres. Derived from the propagated covariance."
+        ),
+    )
+    position_covariance: list[float] = Field(
+        ...,
+        description=(
+            "The 3x3 position covariance at the horizon, in row-major order "
+            "(9 values). Full information for clients that need anisotropy."
+        ),
+    )
+    motion_model: str = Field(
+        ...,
+        description=(
+            "Active motion model used for the projection: stationary, "
+            "constant_velocity, constant_acceleration or maneuvering. Larger "
+            "process noise means a longer assumed correlation, hence wider "
+            "uncertainty."
+        ),
     )
