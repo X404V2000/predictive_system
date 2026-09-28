@@ -143,6 +143,65 @@ frame  time    now (x,y,z)                 ahead   sigma    motion model        
 [   67] t=  2.23s        now=(  0.001, 0.903,  2.680) ahead=0.600m sd=0.223 constant_acceleration | locomote    p=0.49 (!)
 ```
 
+### Real webcam pose: prepared, not yet wired
+
+The pieces for a real webcam skeleton are in place and verified, but the live
+loop is not connected to them yet.
+
+```bash
+bash tools/download_models.sh     # fetch and checksum-verify the weights (17 MB)
+```
+
+| Piece | Status |
+|---|---|
+| System OpenCV 4.10 with DNN | already installed; exposed to the venv by a `.pth` file, so **no packages are added** |
+| Camera from the venv | **30.4 FPS** at 640x480, verified |
+| BlazePose pose model | 5.3 MB, SHA-256 verified against the upstream LFS pointer |
+| Person detector | 12.0 MB, SHA-256 verified |
+| `blazepose.py` mapping | 33 BlazePose landmarks -> 31 CMU joints, verified exact against hand-computed geometry |
+
+**Why MediaPipe was not installed.** `pip install mediapipe` pulls 16 packages
+including an 82 MB OpenCV build, duplicating what is already present, on a
+dual-core machine with 4 GB free. The OpenCV DNN route reaches the same model
+with no new dependency at all.
+
+#### Measured performance ceiling
+
+Running both models on every frame is **not viable on this CPU**:
+
+| Stage | Time | Rate |
+|---|---|---|
+| Pose inference | 102 ms | ~10 FPS |
+| Person detection | 239 ms | ~4 FPS |
+| **Both, per frame** | **341 ms** | **2.7 FPS** |
+
+A 2-second action window would take 5 seconds to fill at that rate. The pose
+model has a **fixed 256x256 input** and cannot be downscaled to trade accuracy
+for speed, so the mitigation must be temporal: run the detector every N frames
+and pose from a tracked crop. That recovers roughly 10 FPS, which is usable but
+visibly choppy.
+
+#### Accuracy is expected to drop, and will be measured
+
+BlazePose and the CMU skeleton differ in topology: BlazePose has **no spine
+chain** and separate hips rather than a single root, so `blazepose.py`
+interpolates those joints and fills unobserved finger joints at the wrist.
+
+Features derived from that mapping are therefore approximate, and the action
+classifier should **not** be assumed to hold its 81.6% motion-capture accuracy on
+webcam input. That gap must be measured before any number is quoted.
+
+#### Landmark layout, established empirically
+
+The indices were read off the model's own output on the reference diagram rather
+than taken from memory, which caught two things:
+
+- **Hips are landmarks 23 and 24**, not 11 and 12 (those are the shoulders).
+- **Rows 33-38 are padding.** Their visibility is exactly 0.0 for both a real
+  person and pure noise, so they are dropped. An early draft also treated the
+  coordinates as normalised `[0, 1]` when they are actually **pixels of the
+  256x256 model input**, which produced a skeleton 600 m tall.
+
 ### Pose sources are pluggable
 
 `pose.py` defines one interface with swappable drivers, so the pipeline does not
@@ -319,7 +378,7 @@ horizon is capped at 2 s.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 142 tests
+pytest                                   # 157 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 

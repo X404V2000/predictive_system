@@ -18,6 +18,10 @@ venv/
 # multiply image size for an optional feature.
 training_data/
 
+# Pose model weights: downloaded at runtime by tools/download_models.sh, not
+# needed to build or run the API endpoints.
+models/
+
 # Test suite: the image runs the service, not the tests, and they are not needed
 # to build or run it. They are also excluded from the image by the explicit COPY
 # instructions, so this only keeps the build context small.

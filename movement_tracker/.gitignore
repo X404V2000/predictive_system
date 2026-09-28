@@ -19,3 +19,8 @@ training_data/
 
 # Motion-capture datasets (large; re-downloadable via the CMU mirror)
 training_data/cmu_mocap/
+
+# Pose estimation weights (17 MB of binaries). Fetch and verify with
+# tools/download_models.sh, which pins the checksum of each file.
+models/*.onnx
+models/*.partial
