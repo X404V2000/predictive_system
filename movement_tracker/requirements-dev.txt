@@ -1,0 +1,14 @@
+# Development and test dependencies.
+#
+# Kept separate from requirements.txt so the runtime image does not carry a test
+# framework and coverage tooling it never uses.
+#
+# Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+httpx==0.28.1

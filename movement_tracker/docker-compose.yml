@@ -1,0 +1,40 @@
+# Runs the prediction service, optionally with action recognition enabled.
+#
+#   docker compose up --build              # physics endpoints only
+#   docker compose --profile actions up --build   # + action recognition
+#
+# The "actions" profile mounts the motion-capture dataset read-only. It is not
+# baked into the image because it is ~160 MB and re-downloadable, and because the
+# physics endpoints work without it.
+
+services:
+  api:
+    build: .
+    image: movement-prediction:latest
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    # Startup trains the action model, which takes roughly 25 seconds on slow
+    # hardware. Without a grace period an orchestrator can kill a container that
+    # is merely still warming up.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/openapi.json',
+          timeout=4).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  actions:
+    profiles: ["actions"]
+    extends:
+      service: api
+    volumes:
+      # Mounted read-only: the service never writes to the dataset.
+      - ./training_data:/app/training_data:ro

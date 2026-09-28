@@ -91,6 +91,37 @@ observed on real motion capture, which is how the process-noise values were set.
 At realistic noise the reported standard deviation is within roughly a factor of
 two of observed error.
 
+## Running the service
+
+### Locally
+
+```bash
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+venv/bin/uvicorn main:app --reload        # http://127.0.0.1:8000/docs
+```
+
+### With Docker
+
+```bash
+docker compose up --build                       # physics endpoints
+docker compose --profile actions up --build     # + action recognition
+```
+
+The dataset is **not** baked into the image. It is ~160 MB and re-downloadable,
+and the physics endpoints work without it: `/predict/action` returns 503 with an
+explanation rather than failing obscurely. The `actions` profile mounts it
+read-only at `/app/training_data`.
+
+Two details worth knowing when deploying:
+
+- **Startup takes about 25 seconds** while the action model trains. The healthcheck
+  allows a 60 s start period for this; without it an orchestrator can kill a
+  container that is merely still warming up.
+- **Dependencies are pinned exactly** in `requirements.txt`. An unpinned service
+  can change behaviour between builds without any code changing, which would make
+  the accuracy figures here impossible to reproduce.
+
 ## Live demo
 
 Runs the whole pipeline continuously: pose source -> trajectory (WHERE) ->

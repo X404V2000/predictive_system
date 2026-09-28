@@ -1,8 +1,14 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.28.0
-numpy>=1.26.0
-pydantic>=2.6.0
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
-pytest-cov>=4.1.0
-httpx>=0.27.0
+# Runtime dependencies for the movement prediction service.
+#
+# Direct dependencies are pinned exactly: an unpinned service can change behaviour
+# between builds without a line of code changing, which makes a reported accuracy
+# figure impossible to reproduce.
+#
+# Transitive dependencies are deliberately NOT listed. They are resolved by the
+# installer against these pins, and freezing the whole tree here would go stale
+# silently. Use `pip freeze` locally when an exact environment snapshot is needed.
+
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+numpy==2.5.3
+pydantic==2.13.5

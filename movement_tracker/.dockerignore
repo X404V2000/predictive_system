@@ -1,0 +1,33 @@
+# Build artefacts and caches: never needed inside the image.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environment: dependencies are installed from requirements.txt during
+# the build, so shipping a host venv would be both wrong (different platform) and
+# enormous.
+venv/
+.venv/
+
+# Motion-capture datasets. These are ~160 MB and re-downloadable, and they are
+# not required to run the API: without them the physics endpoints work normally
+# and /predict/action returns 503 with an explanation. Baking them in would
+# multiply image size for an optional feature.
+training_data/
+
+# Test suite: the image runs the service, not the tests, and they are not needed
+# to build or run it. They are also excluded from the image by the explicit COPY
+# instructions, so this only keeps the build context small.
+tests/
+
+# Developer tooling and editor state.
+.git/
+.gitignore
+.gitattributes
+*.swp
+.DS_Store
+.idea/
+.vscode/
