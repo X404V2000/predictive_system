@@ -16,3 +16,6 @@ training_data/
 # Editor / OS noise
 .DS_Store
 *.swp
+
+# Motion-capture datasets (large; re-downloadable via the CMU mirror)
+training_data/cmu_mocap/
