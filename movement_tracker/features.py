@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from mocap import MotionClip
-from physics import yaw_rate
+from physics import derive_motion, yaw_rate
 
 # Joint indices in the CMU skeleton, verified by parsing the BVH hierarchy
 # directly rather than assumed. The cgspeed conversion defines 31 joints in this
@@ -165,56 +165,76 @@ def _zero_crossing_rate(signal: np.ndarray) -> float:
     return float(crossings / (signal.size - 1))
 
 
-def extract_features(clip: MotionClip, label: str) -> ClipFeatures:
+def features_from_arrays(
+    root_positions: np.ndarray,
+    joint_positions: np.ndarray,
+    sample_dt: float,
+) -> np.ndarray:
     """
-    Computes the feature vector for a clip.
+    Computes the feature vector from raw motion arrays.
 
-    The root trajectory provides locomotion and turning; the joint block provides
-    posture, which is what separates a walking person from a seated one moving
-    their arms.
+    This is the single implementation shared by training (which reads BVH files)
+    and serving (which receives joints over the API). Keeping one code path is
+    essential: if the two computed features even slightly differently, the model
+    would be evaluated on inputs unlike those it was trained on.
+
+    Args:
+        root_positions  (frames, 3) root/hip trajectory in metres
+        joint_positions (frames, joints, 3) joint positions in metres
+        sample_dt       seconds between frames
+
+    Returns an (n_features,) array matching FEATURE_NAMES.
     """
-    positions = clip.positions
-    velocities = clip.velocities
-    dt = clip.sample_dt
+    root_positions = np.asarray(root_positions, dtype=np.float64)
+    joint_positions = np.asarray(joint_positions, dtype=np.float64)
 
+    if root_positions.ndim != 2 or root_positions.shape[1] != 3:
+        raise ValueError(
+            f"root_positions must be (frames, 3), got {root_positions.shape}"
+        )
+    if joint_positions.ndim != 3 or joint_positions.shape[2] != 3:
+        raise ValueError(
+            f"joint_positions must be (frames, joints, 3), got {joint_positions.shape}"
+        )
+    if joint_positions.shape[1] != N_JOINTS:
+        raise ValueError(
+            f"expected {N_JOINTS} joints, got {joint_positions.shape[1]}. "
+            "Supply joints in the CMU order or map them by name first."
+        )
+    if root_positions.shape[0] != joint_positions.shape[0]:
+        raise ValueError(
+            f"frame count mismatch: root has {root_positions.shape[0]}, "
+            f"joints have {joint_positions.shape[0]}"
+        )
+    if sample_dt <= 0:
+        raise ValueError("sample_dt must be positive")
+
+    dt = float(sample_dt)
+    velocities, _accelerations = derive_motion(root_positions, dt)
     speed = np.linalg.norm(velocities, axis=1)
 
-    # Vertical motion of the root, which rises and falls when stepping,
-    # jumping or standing up.
-    vertical = positions[:, 1]
+    vertical = root_positions[:, 1]
     vertical_velocity = np.gradient(vertical, dt)
 
-    # Turning: use the calibrated estimator, which smooths heading and ignores
-    # motion below locomotion speed.
     turn = yaw_rate(velocities, dt)
-    horizontal_speed = np.hypot(velocities[:, 0], velocities[:, 2])
-    moving = horizontal_speed > 0.5
     turning_fraction = float(np.mean(np.abs(turn) > 0.2)) if turn.size else 0.0
 
-    # Joint positions come from forward kinematics, since BVH stores rotations
-    # for non-root joints rather than positions.
-    joints, _skeleton = load_joint_positions(clip)
     foot_height = np.minimum(
-        _joint_heights(joints, LEFT_FOOT), _joint_heights(joints, RIGHT_FOOT)
+        joint_positions[:, LEFT_FOOT, 1], joint_positions[:, RIGHT_FOOT, 1]
     )
     hand_height = np.mean(
-        [_joint_heights(joints, LEFT_HAND), _joint_heights(joints, RIGHT_HAND)],
-        axis=0,
+        [joint_positions[:, LEFT_HAND, 1], joint_positions[:, RIGHT_HAND, 1]], axis=0
     )
-    hip_height = _joint_heights(joints, ROOT_JOINT)
+    hip_height = joint_positions[:, ROOT_JOINT, 1]
 
-    # Posture spread: how far the limbs sit from the body centre, averaged. A
-    # person mid-stride or mid-jump has a wider silhouette than one standing.
     limb_columns = [
-        joints[:, j, :] for j in (LEFT_FOOT, RIGHT_FOOT, LEFT_HAND, RIGHT_HAND)
+        joint_positions[:, j, :]
+        for j in (LEFT_FOOT, RIGHT_FOOT, LEFT_HAND, RIGHT_HAND)
     ]
     centre = np.mean(limb_columns, axis=0)
     posture_spread = float(
         np.mean([np.linalg.norm(limb - centre, axis=1).mean() for limb in limb_columns])
     )
-
-    # Vertical gap between hands and feet: large when reaching overhead or
-    # hanging, small when crouched.
     hand_foot_gap = float(np.mean(hand_height - foot_height))
 
     values = np.array(
@@ -242,7 +262,22 @@ def extract_features(clip: MotionClip, label: str) -> ClipFeatures:
     )
 
     if not np.all(np.isfinite(values)):
-        raise ValueError(f"{clip.subject}: non-finite feature value computed")
+        raise ValueError("non-finite feature value computed")
+
+    return values
+
+
+def extract_features(clip: MotionClip, label: str) -> ClipFeatures:
+    """
+    Computes the feature vector for a clip.
+
+    Delegates to `features_from_arrays` so that the training path (reading BVH)
+    and the serving path (receiving joints over the API) run identical maths. A
+    divergence between the two would mean the model is served inputs unlike those
+    it was trained on.
+    """
+    joints, _skeleton = load_joint_positions(clip)
+    values = features_from_arrays(clip.positions, joints, clip.sample_dt)
 
     return ClipFeatures(
         clip_id=clip.subject,

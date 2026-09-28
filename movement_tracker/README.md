@@ -117,6 +117,38 @@ with 86% of predictions at 99%+ certainty: every mistake was a confident one. A
 ridge of 1.0 cuts the gap to 2.3 points for about 3.5 points of raw accuracy,
 which is the right trade for probabilities that downstream code acts on.
 
+### Endpoints
+
+```
+POST /predict         # trajectory prediction from a tracked point
+POST /predict/action  # action recognition from a window of skeletal motion
+WS   /ws/telemetry    # streaming trajectory prediction
+```
+
+`/predict/action` accepts joint world positions in metres and returns a ranked,
+calibrated distribution:
+
+```bash
+uvicorn main:app --reload
+curl -X POST http://127.0.0.1:8000/predict/action \
+  -H "Content-Type: application/json" \
+  -d '{"entity_id":"p1","sample_dt":0.0333,
+       "positions":[[[0,0.9,0],[0,0.85,0], ...]]}'
+```
+
+Two details matter for callers:
+
+- **A window is required, not a frame.** Speed, cadence and turn rate are
+  undefined for a single instant; at least 10 frames are needed to characterise
+  motion.
+- **`joint_names` lets you send any joint order.** The CMU 31-joint layout is
+  assumed by default. Supply names (for example from a pose estimator) and the
+  payload is reordered by name. A missing joint is rejected rather than
+  substituted, because a wrong joint produces plausible-looking nonsense.
+
+The model is trained once at startup (~25 s), so no request pays for it;
+afterwards `/predict/action` answers in about 25 ms.
+
 ### What does NOT work yet: predicting the NEXT action
 
 `transitions.py` implements a first-order Markov model over segmented windows, and
@@ -199,7 +231,7 @@ horizon is capped at 2 s.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 120 tests
+pytest                                   # 126 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 

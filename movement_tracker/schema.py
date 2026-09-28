@@ -168,3 +168,89 @@ class PredictionOutput(BaseModel):
             "describe the final horizon."
         ),
     )
+
+
+class ActionConfidence(BaseModel):
+    """Probability assigned to one candidate action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(..., description="Action class name")
+    probability: float = Field(
+        ..., ge=0.0, le=1.0, description="Posterior probability of this action"
+    )
+
+
+class PoseWindowInput(BaseModel):
+    """
+    A window of skeletal motion supplied for action classification.
+
+    A window rather than a single frame is required because the motion features
+    describe how the body moves OVER TIME: locomotion speed, vertical travel,
+    cadence and turn rate are all undefined for one instant.
+
+    Positions are expected as (frames, joints, 3) in METRES, in the same joint
+    order the model was trained on (CMU 31-joint skeleton, Hips first, Y up).
+    Joint order can be supplied via `joint_names` and will otherwise be assumed
+    to match the training skeleton exactly.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., description="Identifier for the tracked subject")
+    positions: list[list[list[float]]] = Field(
+        ...,
+        description=(
+            "Joint world positions, shaped (frames, joints, 3), in metres. "
+            "Use the CMU 31-joint order unless joint_names is given."
+        ),
+    )
+    sample_dt: float = Field(
+        ...,
+        gt=0.0,
+        description="Seconds between consecutive frames, required for velocity features",
+    )
+    joint_names: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional joint names matching the frame axis. When given, the "
+            "expected joints are looked up by name so a differently ordered "
+            "skeleton can be supplied."
+        ),
+    )
+
+
+class ActionPrediction(BaseModel):
+    """
+    Distribution over coarse actions for one observation window.
+
+    The full distribution is returned rather than a single label because a
+    consumer deciding how to respond needs to know when the classifier is
+    uncertain. Confidence is calibrated: on held-out subjects the stated
+    probability tracks observed accuracy to within a few points.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., description="Identifier for the tracked subject")
+    action: str = Field(..., description="Most likely action")
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Probability of the most likely action"
+    )
+    distribution: list[ActionConfidence] = Field(
+        ...,
+        description="Full posterior over all known actions, highest probability first",
+    )
+    window_seconds: float = Field(
+        ..., gt=0.0, description="Duration of motion the request described"
+    )
+    model_version: str = Field(
+        ..., description="Identifier of the model that produced this prediction"
+    )
+    low_confidence: bool = Field(
+        ...,
+        description=(
+            "True when the top probability is below the model's reliability "
+            "floor, meaning the result should be treated as advisory only."
+        ),
+    )

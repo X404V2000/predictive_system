@@ -228,3 +228,146 @@ def test_confidences_are_calibrated_on_held_out_subjects() -> None:
         f"classifier is overconfident: claims {np.mean(confidences):.3f} but is "
         f"right {np.mean(outcomes):.3f} (gap {gap:+.3f})"
     )
+
+
+# --- API integration -------------------------------------------------------
+
+
+def _api_client():
+    from fastapi.testclient import TestClient
+
+    import main
+
+    return TestClient(main.app)
+
+
+def _pose_payload(frames: int = 40, joints: int = 31, seed: int = 0) -> dict:
+    """
+    A synthetic but valid skeleton window.
+
+    Guard the joint accesses so the helper can also build deliberately invalid
+    payloads (fewer joints) without raising before the request is even sent.
+    """
+    rng = np.random.default_rng(seed)
+    positions = rng.normal(0.0, 0.05, size=(frames, joints, 3))
+    if joints > 9:
+        positions[:, 0, 1] += 0.9  # hip near standing height
+        positions[:, 4, 1] = 0.05  # left foot on the floor
+        positions[:, 9, 1] = 0.05  # right foot on the floor
+    return {
+        "entity_id": "test",
+        "positions": positions.tolist(),
+        "sample_dt": 1.0 / 30.0,
+    }
+
+
+@requires_data
+def test_action_endpoint_returns_a_distribution() -> None:
+    client = _api_client()
+    response = client.post("/predict/action", json=_pose_payload())
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["action"]
+    assert 0.0 <= body["confidence"] <= 1.0
+
+    probabilities = [entry["probability"] for entry in body["distribution"]]
+    assert probabilities == sorted(probabilities, reverse=True), "must be ranked"
+    assert sum(probabilities) == pytest.approx(1.0, abs=1e-6)
+    assert body["model_version"]
+
+
+@requires_data
+def test_action_endpoint_flags_low_confidence() -> None:
+    """
+    An ambiguous window must be reported as low confidence rather than presented
+    as a decision. Motion near the training mean is the ambiguous case.
+    """
+    client = _api_client()
+    payload = _pose_payload()
+    # Gently moving, mid-range posture: unlike any strong action.
+    positions = np.asarray(payload["positions"])
+    positions[:, :, 1] += 0.4
+    positions += np.linspace(0, 0.02, positions.shape[0])[:, None, None]
+    payload["positions"] = positions.tolist()
+
+    body = client.post("/predict/action", json=payload).json()
+    assert "low_confidence" in body
+    assert isinstance(body["low_confidence"], bool)
+
+
+@requires_data
+def test_action_endpoint_rejects_malformed_positions() -> None:
+    client = _api_client()
+
+    bad_frames = _pose_payload(frames=3)  # too short to characterise motion
+    assert client.post("/predict/action", json=bad_frames).status_code == 400
+
+    wrong_shape = _pose_payload()
+    wrong_shape["positions"] = [[[0.0, 0.0]]]  # not (frames, joints, 3)
+    assert client.post("/predict/action", json=wrong_shape).status_code == 400
+
+    wrong_joints = _pose_payload(joints=7)  # not the training skeleton
+    assert client.post("/predict/action", json=wrong_joints).status_code == 400
+
+
+@requires_data
+def test_action_endpoint_accepts_joint_names_in_another_order() -> None:
+    """
+    A caller using a different skeleton order can supply names, and the payload
+    must be reordered rather than silently misread.
+    """
+    from features import JOINT_ORDER
+
+    client = _api_client()
+    payload = _pose_payload()
+
+    positions = np.asarray(payload["positions"])
+    shuffled = list(reversed(JOINT_ORDER))
+    payload["positions"] = positions[:, ::-1, :].tolist()
+    payload["joint_names"] = shuffled
+
+    response = client.post("/predict/action", json=payload)
+    assert response.status_code == 200, response.text
+
+    # Reordering by name must reproduce the original result.
+    plain = client.post(
+        "/predict/action",
+        json={
+            "entity_id": "test",
+            "positions": positions.tolist(),
+            "sample_dt": payload["sample_dt"],
+        },
+    ).json()
+
+    assert response.json()["action"] == plain["action"]
+
+
+@requires_data
+def test_action_endpoint_rejects_incomplete_joint_names() -> None:
+    """A skeleton missing required joints must be refused, not guessed at."""
+    client = _api_client()
+    payload = _pose_payload()
+    payload["joint_names"] = ["Hips", "Spine"]
+
+    response = client.post("/predict/action", json=payload)
+    assert response.status_code == 400
+    assert "missing" in response.json()["detail"].lower()
+
+
+@requires_data
+def test_action_endpoint_rejects_non_finite_values() -> None:
+    """
+    A payload containing NaN must be refused with a clear error.
+
+    NaN cannot be sent as JSON, so the value is injected as the string "NaN",
+    which a client could genuinely produce, and the server must reject it rather
+    than propagating a non-finite feature into the model.
+    """
+    client = _api_client()
+    payload = _pose_payload()
+    payload["positions"][0][0][0] = "NaN"
+
+    response = client.post("/predict/action", json=payload)
+    assert response.status_code in (400, 422), response.text

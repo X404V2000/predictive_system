@@ -5,15 +5,47 @@ Exposes RESTful and WebSocket real-time interfaces.
 """
 
 import json
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
-from schema import PredictionOutput, TelemetryInput
+import numpy as np
+
+from schema import (
+    ActionConfidence,
+    ActionPrediction,
+    PoseWindowInput,
+    PredictionOutput,
+    TelemetryInput,
+)
 from tracker import EntityTracker
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """
+    Trains the action model during startup so no user request pays for it.
+
+    Training takes roughly 25 seconds on this hardware. Doing it lazily on the
+    first request made that single request slow enough to look like a failure and
+    to trip client timeouts. A failure here is not fatal: the physics endpoints
+    work without the dataset, and /predict/action reports 503 with a reason.
+    """
+    try:
+        _get_action_model()
+    except RuntimeError:
+        # Left for the endpoint to report with a proper status code.
+        pass
+    yield
+
 
 app = FastAPI(
     title="Movement Prediction API",
-    description="Real-time low-latency trajectory prediction engine using dynamic state filtering.",
-    version="2.0.0",
+    description=(
+        "Trajectory prediction from kinematic filtering, plus action recognition "
+        "from skeletal motion."
+    ),
+    version="2.1.0",
+    lifespan=lifespan,
 )
 
 # Instantiate multi-entity tracking manager
@@ -144,3 +176,148 @@ async def websocket_telemetry_stream(websocket: WebSocket):
     except WebSocketDisconnect:
         # Handle graceful disconnect
         pass
+
+
+# --- behavioural layer ----------------------------------------------------
+#
+# The action model is trained once at first use rather than at import, so the
+# physics API stays usable when the motion-capture dataset is absent. Training
+# takes a second or two; the fitted model is then reused for every request.
+
+_action_model: object | None = None
+_action_model_error: str | None = None
+
+
+def _get_action_model():
+    """
+    Returns the trained action classifier, training it on first use.
+
+    Raises RuntimeError with an explanatory message when the labelled dataset is
+    unavailable, so a caller receives a clear diagnosis instead of an opaque 500.
+    """
+    global _action_model, _action_model_error
+
+    if _action_model is not None:
+        return _action_model
+    if _action_model_error is not None:
+        raise RuntimeError(_action_model_error)
+
+    try:
+        from actions import train_default_model
+
+        _action_model = train_default_model()
+    except Exception as exc:  # dataset missing or unreadable
+        _action_model_error = (
+            f"action model unavailable: {exc}. The behavioural layer needs the "
+            "labelled motion-capture dataset under training_data/cmu_mocap."
+        )
+        raise RuntimeError(_action_model_error) from exc
+
+    return _action_model
+
+
+MIN_ACTION_FRAMES: int = 10
+
+
+
+def _joint_array(payload: PoseWindowInput) -> np.ndarray:
+    """
+    Converts the request's nested lists into a validated (frames, joints, 3) array.
+
+    Raises ValueError for shapes the feature extractor cannot consume, so the
+    caller gets a 400 rather than a stack trace.
+    """
+    try:
+        positions = np.asarray(payload.positions, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"positions must be numeric: {exc}") from exc
+
+    if positions.ndim != 3 or positions.shape[2] != 3:
+        raise ValueError(
+            "positions must be shaped (frames, joints, 3); got "
+            f"{tuple(positions.shape)}"
+        )
+    if positions.shape[0] < MIN_ACTION_FRAMES:
+        raise ValueError(
+            f"at least {MIN_ACTION_FRAMES} frames are required to characterise "
+            f"motion; got {positions.shape[0]}"
+        )
+    if not np.all(np.isfinite(positions)):
+        raise ValueError("positions contain non-finite values")
+
+    return positions
+
+
+def _reorder_joints(positions: np.ndarray, joint_names: list[str]) -> np.ndarray:
+    """
+    Reorders a supplied skeleton into the training joint order by name.
+
+    Accepting names lets a caller send a differently ordered skeleton, which is
+    the common case for cameras and pose estimators that do not use the CMU
+    layout. A missing joint is an error: silently substituting one would produce
+    plausible-looking but wrong features.
+    """
+    from features import JOINT_ORDER
+
+    lookup = {name: index for index, name in enumerate(joint_names)}
+    missing = [name for name in JOINT_ORDER if name not in lookup]
+    if missing:
+        raise ValueError(
+            f"joint_names is missing {len(missing)} required joint(s): "
+            f"{', '.join(missing[:5])}"
+            + (" ..." if len(missing) > 5 else "")
+        )
+
+    order = [lookup[name] for name in JOINT_ORDER]
+    return positions[:, order, :]
+
+
+@app.post("/predict/action", response_model=ActionPrediction)
+async def predict_action(payload: PoseWindowInput):
+    """
+    Classifies the action being performed in a window of skeletal motion.
+
+    Returns a calibrated probability distribution over coarse actions rather than
+    a bare label, so a caller can tell a confident recognition from a guess.
+    """
+    try:
+        model = _get_action_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        positions = _joint_array(payload)
+        if payload.joint_names is not None:
+            positions = _reorder_joints(positions, payload.joint_names)
+
+        # The root trajectory is the hip joint, read from the supplied skeleton
+        # rather than asked for separately, so the two can never disagree.
+        from features import ROOT_JOINT, features_from_arrays
+
+        root = positions[:, ROOT_JOINT, :]
+        values = features_from_arrays(root, positions, payload.sample_dt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    probabilities = model.predict_proba(values)
+    ranked = sorted(
+        (
+            {"action": name, "probability": float(probabilities[index])}
+            for index, name in enumerate(model.classes)
+        ),
+        key=lambda item: item["probability"],
+        reverse=True,
+    )
+
+    from actions import LOW_CONFIDENCE_THRESHOLD, MODEL_VERSION
+
+    top = ranked[0]
+    return ActionPrediction(
+        entity_id=payload.entity_id,
+        action=top["action"],
+        confidence=top["probability"],
+        distribution=[ActionConfidence(**item) for item in ranked],
+        window_seconds=float(positions.shape[0] * payload.sample_dt),
+        model_version=MODEL_VERSION,
+        low_confidence=top["probability"] < LOW_CONFIDENCE_THRESHOLD,
+    )

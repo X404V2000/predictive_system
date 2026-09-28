@@ -308,9 +308,32 @@ def load_labelled_features(
     return samples, subjects
 
 
+# Below this top probability the classification is reported as advisory only.
+# Averaged over held-out subjects the model is right about 82% of the time, so a
+# confident-looking 0.4 should not be presented as a decision.
+LOW_CONFIDENCE_THRESHOLD: float = 0.55
+
+MODEL_VERSION: str = "cmu-gaussian-v1"
+
+
+def train_default_model() -> GaussianActionModel:
+    """
+    Trains the model from the bundled labelled motion capture.
+
+    Intended for process startup. Raises FileNotFoundError when the dataset is
+    absent so the caller can decide whether to serve without the action layer,
+    rather than silently returning a model fitted on nothing.
+    """
+    samples, _subjects = load_labelled_features()
+    return GaussianActionModel.fit(samples)
+
+
 __all__ = [
     "ACTION_RULES",
+    "LOW_CONFIDENCE_THRESHOLD",
+    "MODEL_VERSION",
     "GaussianActionModel",
     "coarse_action",
     "load_labelled_features",
+    "train_default_model",
 ]
