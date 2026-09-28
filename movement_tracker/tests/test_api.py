@@ -16,7 +16,11 @@ client = TestClient(app)
 
 def test_predict_endpoint_success() -> None:
     """
-    Ensures REST payload processing works as expected.
+    Processes a REST payload and returns a well-formed prediction.
+
+    A single frame carries no motion history, so the velocity estimate stays at
+    zero and the prediction is the observed position. Velocity is only inferred
+    once successive observations arrive (see the streaming test below).
     """
     payload = {
         "entity_id": "test_target",
@@ -36,32 +40,73 @@ def test_predict_endpoint_success() -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["entity_id"] == "test_target"
-    assert pytest.approx(data["predicted_x"], abs=0.05) == 10.0
+    assert data["horizon_seconds"] == 2.0
+    # First observation: nothing to extrapolate from yet.
+    assert pytest.approx(data["predicted_x"], abs=0.05) == 0.0
+
+
+def test_repeated_rest_calls_infer_velocity_from_position_history() -> None:
+    """
+    Streaming successive positions must let the pipeline recover the true
+    velocity, which is the behaviour a real position sensor relies on.
+
+    The client-supplied `vx` is deliberately wrong here; a correct pipeline
+    derives motion from position rather than trusting the wire value.
+    """
+    entity = "walking_target"
+    velocity = 2.0
+    dt = 0.2
+
+    prediction = None
+    position = 0.0
+    for step in range(60):
+        position += velocity * dt
+        payload = {
+            "entity_id": entity,
+            "x": position,
+            "y": 0.0,
+            "z": 0.0,
+            "vx": 999.0,  # deliberately absurd; must be ignored
+            "timestamp": 1000.0 + step * dt,
+        }
+        response = client.post("/predict?time_horizon=1.0", json=payload)
+        assert response.status_code == 200
+        prediction = response.json()
+
+    # True position at +1 s horizon is current position + velocity * 1 s.
+    expected = position + velocity * 1.0
+    assert pytest.approx(prediction["predicted_x"], abs=0.2) == expected
+
 
 def test_websocket_telemetry_stream() -> None:
     """
-    Validates asynchronous WebSocket bi-directional streaming.
+    Validates asynchronous WebSocket bi-directional streaming and that the
+    filter accumulates motion across frames.
     """
-    payload = {
-        "entity_id": "stream_target",
-        "time_horizon": 1.5,
-        "x": 10.0,
-        "y": 0.0,
-        "z": 0.0,
-        "vx": 2.0,
-        "vy": 0.0,
-        "vz": 0.0,
-        "timestamp": 2000.0,
-    }
-
-    # Open persistent WebSocket testing tunnel
     with client.websocket_connect("/ws/telemetry") as websocket:
-        websocket.send_json(payload)
-        response_data = websocket.receive_json()
+        velocity = 2.0
+        dt = 0.2
+        position = 0.0
+        response_data = None
+
+        for step in range(60):
+            position += velocity * dt
+            websocket.send_json(
+                {
+                    "entity_id": "stream_target",
+                    "time_horizon": 1.5,
+                    "x": position,
+                    "y": 0.0,
+                    "z": 0.0,
+                    "timestamp": 2000.0 + step * dt,
+                }
+            )
+            response_data = websocket.receive_json()
 
         assert response_data["entity_id"] == "stream_target"
         assert response_data["horizon_seconds"] == 1.5
-        assert pytest.approx(response_data["predicted_x"], abs=0.1) == 13.0
+        expected = position + velocity * 1.5
+        assert pytest.approx(response_data["predicted_x"], abs=0.2) == expected
 
 def test_predict_endpoint_invalid_time_horizon() -> None:
     """

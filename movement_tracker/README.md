@@ -17,25 +17,47 @@ distribution, learned from motion-capture data.
 ```
 Telemetry (REST / WebSocket)
    → schema.py     Pydantic input/output validation
-   → tracker.py    per-entity EKF instances, lifecycle + TTL eviction
-   → filter.py     9-state Extended Kalman Filter  [x,y,z, vx,vy,vz, ax,ay,az]
+   → tracker.py    per-entity filters, motion-model selection, lifecycle + TTL
+   → filter.py     9-state Kalman filter  [x,y,z, vx,vy,vz, ax,ay,az]
    → predictor.py  Constant-Acceleration / Coordinated-Turn projection
    → PredictionOutput
 ```
 
-## The two time quantities (important)
+### Measurement and motion models
 
-The pipeline distinguishes two physical quantities that are easy to conflate:
+Two choices carry most of the accuracy:
+
+- **Position-only measurement.** A position sensor does not observe velocity.
+  Feeding the filter a finite-difference velocity derived from noisy positions
+  injects large phantom motion: at 120 Hz, 2 cm of noise becomes ~2.4 m/s of
+  apparent velocity. The filter therefore observes position only and infers
+  velocity from position history.
+- **Automatic motion-model selection.** One process-noise setting cannot serve
+  both a seated person and a runner. The tracker selects between `stationary`,
+  `constant_velocity`, `constant_acceleration` and `maneuvering`, judging motion
+  from displacement over a fixed time window. Under the `stationary` model
+  velocity decays geometrically toward zero (a Gauss-Markov process), which is
+  what stops a motionless target from accumulating drift.
+
+## Time handling (important)
+
+The pipeline distinguishes quantities that are easy to conflate:
 
 | Quantity | Meaning | Used by |
 |---|---|---|
 | `measurement_dt` | elapsed telemetry time between consecutive samples for one entity | the filter's `predict()` integration step |
 | `dt` | the forward prediction horizon | extrapolation only |
+| `SPEED_WINDOW_SECONDS` | fixed duration over which displacement is measured | motion-model selection |
 
 Passing the prediction horizon into the filter's integration step over-integrates
-the state and silently corrupts the covariance. `tests/test_accuracy.py` guards
-against this: with the bug present the filtered prediction error rises to
-~3.7 m; correct, it is ~0.18 m.
+the state and silently corrupts the covariance.
+
+All timing is expressed in **seconds rather than frames**. Noise-induced apparent
+speed is `sqrt(2)*sigma/dt`, so from 2 cm of noise a motionless target appears to
+move at 0.28 m/s when sampled at 10 Hz but 3.4 m/s at 120 Hz. Measuring
+displacement over a fixed window divides that noise by a fixed duration, making
+classification and velocity estimation independent of the frame rate.
+
 
 ## Running
 
