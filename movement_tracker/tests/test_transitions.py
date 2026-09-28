@@ -218,15 +218,17 @@ def test_high_stool_sitting_is_nearly_indistinguishable_from_standing() -> None:
 
 @requires_data
 @slow
-def test_transition_model_has_not_yet_demonstrated_lift() -> None:
+def test_transition_model_reduces_to_the_majority_successor_rule() -> None:
     """
-    Records the CURRENT measured state of the transition model: it does not beat
-    a constant predictor.
+    Records why the transition model currently adds no predictive value.
 
-    This is a guard, not an endorsement. If a future change gives the model real
-    lift, this test will fail, and that failure is the signal to update the
-    module docstring and start presenting the capability. Until then, code and
-    documentation should not claim "predicts the next movement".
+    Its most likely next action is EXACTLY the per-state majority successor, so
+    the argmax re-derives a simple counting rule rather than learning anything
+    extra. This test pins that equivalence down.
+
+    It is written to fail if the model ever starts disagreeing with that rule AND
+    scoring better, which would be the signal that real structure has emerged and
+    the module docstring should change.
     """
     from collections import Counter
 
@@ -236,41 +238,61 @@ def test_transition_model_has_not_yet_demonstrated_lift() -> None:
     samples, _ = load_labelled_features()
     model = GaussianActionModel.fit(samples)
     sequences = collect_sequences(model)
+    subjects = sorted({s.clip_id.split("/")[0] for s in sequences})
 
-    pairs = [
-        (a, b)
-        for s in sequences
-        for a, b in zip(s.actions, s.actions[1:])
-        if a != "uncertain" and b != "uncertain"
-    ]
-    assert pairs, "no adjacent action pairs available"
+    comparisons = 0
+    agreements = 0
+    model_scores: list[float] = []
+    baseline_scores: list[float] = []
 
-    by_current: dict[str, list[str]] = {}
-    for current, following in pairs:
-        by_current.setdefault(current, []).append(following)
-
-    transition = TransitionModel.fit(sequences)
-
-    model_hits = 0.0
-    baseline_hits = 0.0
-    considered = 0
-    for current, followings in by_current.items():
-        if len(followings) < 3:
+    for held_out in subjects:
+        train = [s for s in sequences if s.clip_id.split("/")[0] != held_out]
+        test = [s for s in sequences if s.clip_id.split("/")[0] == held_out]
+        if not train or not test:
             continue
-        predicted, _ = transition.most_likely_next(current)
-        model_hits += sum(1 for f in followings if f == predicted) / len(followings)
-        majority = Counter(followings).most_common(1)[0]
-        baseline_hits += majority[1] / len(followings)
-        considered += 1
 
-    assert considered >= 3, "not enough states to compare"
-    model_balanced = model_hits / considered
-    baseline_balanced = baseline_hits / considered
+        transition = TransitionModel.fit(train)
 
-    # The model currently matches rather than beats the baseline. If lift appears,
-    # this assertion fails deliberately: revisit the docs and this guard.
-    assert model_balanced <= baseline_balanced + 0.10, (
-        f"transition model now shows real lift "
-        f"({model_balanced:.1%} vs {baseline_balanced:.1%}); update the "
-        f"module docstring and stop reporting it as not-yet-useful"
+        # Per-state majority successor, learned from the TRAINING folds only.
+        by_current: dict[str, list[str]] = {}
+        for s in train:
+            for a, b in zip(s.actions, s.actions[1:]):
+                by_current.setdefault(a, []).append(b)
+        successor = {
+            state: Counter(followings).most_common(1)[0][0]
+            for state, followings in by_current.items()
+        }
+
+        for state, expected in successor.items():
+            comparisons += 1
+            agreements += int(transition.most_likely_next(state)[0] == expected)
+
+        pairs = [
+            (a, b)
+            for s in test
+            for a, b in zip(s.actions, s.actions[1:])
+            if a != "uncertain" and b != "uncertain"
+        ]
+        if not pairs:
+            continue
+
+        model_scores.append(
+            float(np.mean([b == transition.most_likely_next(a)[0] for a, b in pairs]))
+        )
+        baseline_scores.append(
+            float(np.mean([b == successor.get(a, "") for a, b in pairs]))
+        )
+
+    assert comparisons > 0, "no states to compare"
+    assert agreements == comparisons, (
+        f"model now disagrees with the majority-successor rule in "
+        f"{comparisons - agreements} of {comparisons} states; if it also scores "
+        f"better, update the module docstring"
+    )
+
+    model_mean = float(np.mean(model_scores))
+    baseline_mean = float(np.mean(baseline_scores))
+    assert model_mean <= baseline_mean + 0.02, (
+        f"transition model now beats the per-state baseline by "
+        f"{model_mean - baseline_mean:+.1%}; revisit the documented conclusion"
     )

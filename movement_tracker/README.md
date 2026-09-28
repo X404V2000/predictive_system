@@ -91,6 +91,53 @@ observed on real motion capture, which is how the process-noise values were set.
 At realistic noise the reported standard deviation is within roughly a factor of
 two of observed error.
 
+## Action recognition
+
+A second layer classifies *what* the body is doing, from 18 motion features
+(locomotion, vertical motion, turning, cadence, posture) computed from the root
+trajectory and joint positions.
+
+```bash
+python3 tools/evaluate_actions.py    # accuracy, confusion matrix, per-class recall
+```
+
+Measured with **leave-one-subject-out**, which is the honest protocol here because
+class and subject are confounded: most action classes appear in only two of the
+five subjects, so a random clip split would leak subject identity.
+
+| Metric | Value |
+|---|---|
+| Accuracy | **81.6%** |
+| Majority baseline | 20.7% |
+| Calibration gap | **2.3 points** |
+
+Calibration needed deliberate work. At the numerically minimal covariance ridge
+the model claimed 98.3% mean confidence while being correct 85.1% of the time,
+with 86% of predictions at 99%+ certainty: every mistake was a confident one. A
+ridge of 1.0 cuts the gap to 2.3 points for about 3.5 points of raw accuracy,
+which is the right trade for probabilities that downstream code acts on.
+
+### What does NOT work yet: predicting the NEXT action
+
+`transitions.py` implements a first-order Markov model over segmented windows, and
+it does **not** add predictive value. Leave-one-subject-out:
+
+| | next-action accuracy |
+|---|---|
+| transition model | 64.9% |
+| always predict one class | 64.4% |
+| per-state majority successor | 64.9% |
+
+The model's most likely next action is *exactly* the per-state majority successor
+(6 of 6 states, both folds), so it re-derives a counting rule rather than learning
+structure. The cause is the class definition: one coarse class absorbs 60-86% of
+windows and 64% of all transitions, so every row's maximum is "stay put". Window
+duration does not fix this (0.5 s to 4.0 s all show zero lift, and shorter windows
+make the skew worse).
+
+Making this work requires mutually exclusive action states with comparable
+frequencies, which is a data decision rather than a tuning fix.
+
 ## Trajectory (multi-step) output
 
 By default a prediction is a single point at one horizon. Adding
@@ -152,7 +199,7 @@ horizon is capped at 2 s.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 83 tests
+pytest                                   # 120 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 

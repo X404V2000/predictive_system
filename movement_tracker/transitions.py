@@ -16,28 +16,52 @@ Data reality, established by measurement rather than assumed:
 * Transition evidence is consequently weaker than the labels suggest, because a
   misclassified window becomes a spurious transition.
 
-MEASURED LIMITATION — this model is not yet useful, and that should not be
-softened. Under leave-one-subject-out it scores 64.9% next-action accuracy, but
-a constant "always predict manipulate" baseline scores 64.3%. On balanced
-accuracy, which removes the class skew, both score exactly 51.4%: the model
-adds ZERO lift over a constant predictor.
+MEASURED RESULT — the model does NOT add predictive value, and the reason is
+structural rather than a tuning problem.
 
-Three reasons, in order of importance:
+Leave-one-subject-out, predicting the next window's action:
 
-  1. One class dominates the window stream. 64% of classified windows are
-     "manipulate", so most rows of the transition matrix are near-degenerate and
-     collapse to the majority action.
-  2. Segment boundaries are inferred, not known. The catalogue labels carry no
+    transition model                    64.9%
+    always predict one class            64.4%
+    per-state majority (same info)      64.9%
+
+The model's most likely next action is EXACTLY the per-state majority successor:
+it agreed with that rule in 6 of 6 states on both folds. So the lifted argmax is
+not adding information, it is re-deriving the majority predictor. There is no
+lift to find by tuning this formulation.
+
+An earlier version of this analysis reported a +11.8 point win over the per-state
+baseline. That was a measurement error: the baseline was computed on the test
+pairs while the model score was averaged per fold, so unlike quantities were
+compared. Corrected here; the conclusion flipped to "no lift".
+
+Three underlying causes, in order of importance:
+
+  1. One class dominates. "manipulate" merges washing, sweeping, mopping and
+     drinking, which have little in common (mean hand height ranges 0.73-0.99 m).
+     The merged class sits near the global feature mean, so it absorbs every
+     ambiguous window: 60-86% of windows depending on window length. It is also
+     64% of all next-actions, so its self-transition (P=0.71) swamps the matrix
+     and every row's maximum is simply "stay in manipulate".
+  2. Segment boundaries are inferred, not known. Catalogue labels carry no
      timings, so each misclassified window manufactures a transition that never
      happened.
-  3. Only 34 sequence clips are available.
+  3. Only 34 sequence clips are available, so every estimate is noisy.
 
-The infrastructure is kept because it is correct and will become useful with
-better input: even window durations would help, and finer window granularity
-plus a class-balanced classifier would help more. It should NOT be presented as
-delivering "predict the next movement" until the lift is demonstrably positive.
+Window duration was tested and does NOT fix this: sweeps from 0.5 s to 4.0 s gave
++0.0 lift, and shorter windows made the class skew WORSE (86% in one class at
+0.5 s). The cause is the class definition, not the segmentation.
 
-numpy and the standard library only.
+What would be needed to make this work: mutually exclusive action states with
+comparable frequency, either by splitting the dominant class into genuinely
+distinct behaviours or by obtaining sequence data whose actions are balanced.
+That is a data decision, not a modelling tweak.
+
+Honest summary for callers: this does NOT deliver "predict the next movement".
+It is a correct implementation of a first-order Markov model over segmented
+windows, kept for the day the input supports it.
+
+numpy and the standard library only.numpy and the standard library only.numpy and the standard library only.
 """
 
 from dataclasses import dataclass, field

@@ -89,6 +89,13 @@ class ClipFeatures:
         return dict(zip(FEATURE_NAMES, (float(v) for v in self.values)))
 
 
+# Forward kinematics is the dominant cost in feature extraction: it parses the
+# hierarchy and composes 31 joints across every frame. Windowed analysis calls it
+# once per window over the SAME file, so the full-file result is cached and
+# sliced per window instead of recomputed.
+_FK_CACHE: dict[Path, tuple[np.ndarray, object]] = {}
+
+
 def load_joint_positions(
     clip: "MotionClip | Path",
 ) -> tuple[np.ndarray, "Skeleton"]:
@@ -110,7 +117,15 @@ def load_joint_positions(
     from skeleton import load_joint_positions as _fk
 
     path = clip.path if isinstance(clip, MotionClip) else Path(clip)
-    positions, skeleton = _fk(path, metres=True)
+
+    cached = _FK_CACHE.get(path)
+    if cached is None:
+        full_positions, skeleton = _fk(path, metres=True)
+        _FK_CACHE[path] = (full_positions, skeleton)
+    else:
+        full_positions, skeleton = cached
+
+    positions = full_positions
 
     # Honour a sub-clip's frame window, so joint data lines up with the root
     # trajectory the clip carries. Skipping this would silently mismatch lengths.

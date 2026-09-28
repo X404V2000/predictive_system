@@ -11,6 +11,7 @@ Usage:
 """
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -74,34 +75,87 @@ def main() -> int:
         nxt, probability = transition.most_likely_next(state)
         print(f"  {state:<12} -> {nxt:<12} p={probability:.2f}")
 
-    # --- honest check: is the matrix better than chance? -----------------
+    # --- honest check: is the matrix better than a baseline? -------------
+    #
+    # All three scores are computed from the SAME per-fold test pairs and then
+    # averaged over folds. Mixing pooled and per-fold aggregation would compare
+    # unlike quantities and produce a meaningless gap.
     print()
     print("hold-one-subject-out check (predict the next window's action):")
-    correct = 0
-    total = 0
-    for seq in sequences:
-        subject = seq.clip_id.split("/")[0]
-        others = [
-            s for s in sequences if s.clip_id.split("/")[0] != subject
-        ]
-        if not others:
-            continue
-        fold_model = TransitionModel.fit(others)
-        for current, following in zip(seq.actions, seq.actions[1:]):
-            if current == "uncertain" or following == "uncertain":
-                continue
-            predicted, _ = fold_model.most_likely_next(current)
-            total += 1
-            correct += int(predicted == following)
 
-    if total == 0:
-        print("  no evaluable adjacent pairs")
-    else:
-        print(f"  next-action accuracy: {correct}/{total} = {correct / total:.1%}")
-        print(
-            "  NOTE: with this few sequence clips the estimate is noisy, and the "
-            "action\n        vocabulary is small, so treat it as indicative only."
+    fold_reports: list[tuple[str, int, float, float, float]] = []
+
+    for held_out in sorted({s.clip_id.split("/")[0] for s in sequences}):
+        train = [s for s in sequences if s.clip_id.split("/")[0] != held_out]
+        test = [s for s in sequences if s.clip_id.split("/")[0] == held_out]
+        if not train or not test:
+            continue
+
+        fold_model = TransitionModel.fit(train)
+
+        # Pairs the MODEL is scored on. Only the test subject is scored, and
+        # only where both windows carry a decision.
+        pairs = [
+            (a, b)
+            for s in test
+            for a, b in zip(s.actions, s.actions[1:])
+            if a != "uncertain" and b != "uncertain"
+        ]
+        if not pairs:
+            continue
+
+        model_score = float(
+            np.mean([b == fold_model.most_likely_next(a)[0] for a, b in pairs])
         )
+
+        # Baseline 1: always predict the most common next action, learned from
+        # the TRAINING folds so the baseline sees no test information.
+        train_pairs = [
+            (a, b) for s in train for a, b in zip(s.actions, s.actions[1:])
+        ]
+        common = Counter(b for _, b in train_pairs).most_common(1)[0][0]
+        global_score = float(np.mean([b == common for a, b in pairs]))
+
+        # Baseline 2: the majority successor of the current action, again learned
+        # from the training folds. This baseline is allowed the same information
+        # as the model, so beating it is the meaningful test of learned structure.
+        successor: dict[str, str] = {}
+        by_current_train: dict[str, list[str]] = {}
+        for a, b in train_pairs:
+            by_current_train.setdefault(a, []).append(b)
+        for state, followings in by_current_train.items():
+            successor[state] = Counter(followings).most_common(1)[0][0]
+        per_state_score = float(
+            np.mean([b == successor.get(a, common) for a, b in pairs])
+        )
+
+        fold_reports.append(
+            (held_out, len(pairs), model_score, global_score, per_state_score)
+        )
+
+    if not fold_reports:
+        print("  no evaluable folds")
+        return 1
+
+    print(f"  {'held-out':<10}{'n':>6}{'model':>10}{'common':>10}{'per-state':>11}")
+    for held_out, n, m, g, ps in fold_reports:
+        print(f"  {held_out:<10}{n:>6}{m:>9.1%}{g:>10.1%}{ps:>11.1%}")
+
+    model_score = float(np.mean([r[2] for r in fold_reports]))
+    global_score = float(np.mean([r[3] for r in fold_reports]))
+    per_state_score = float(np.mean([r[4] for r in fold_reports]))
+
+    print()
+    print(f"  mean over {len(fold_reports)} folds:")
+    print(f"    transition model            {model_score:>7.1%}")
+    print(f"    always predict one class    {global_score:>7.1%}   "
+          f"lift {model_score - global_score:+.1f} pts")
+    print(f"    per-state majority          {per_state_score:>7.1%}   "
+          f"lift {model_score - per_state_score:+.1f} pts")
+    print()
+    print("  Beating the per-state baseline means real transition structure was")
+    print("  learned. Beating the constant guess is what makes it actionable; the")
+    print("  model currently does not, because one class dominates the data.")
 
     return 0
 
