@@ -42,9 +42,24 @@ against this: with the bug present the filtered prediction error rises to
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 20 tests
+pytest                                   # 36 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
+
+### Benchmark against real motion capture
+
+```bash
+python3 tools/benchmark.py                       # ADE/FDE vs baselines, all clips
+python3 tools/benchmark.py --horizon 0.25
+python3 tools/benchmark.py --noise 0.10          # heavier sensor noise
+python3 tools/benchmark.py --subjects 007 009    # walking + running only
+```
+
+On real CMU walking clips at a realistic 0.02 m sensor noise the filtered
+prediction beats raw extrapolation by roughly 6x in ADE, and the gap widens with
+noise: raw differencing amplifies measurement noise directly, while the filter
+does not.
+
 
 ### REST
 
