@@ -110,7 +110,15 @@ def load_joint_positions(
     from skeleton import load_joint_positions as _fk
 
     path = clip.path if isinstance(clip, MotionClip) else Path(clip)
-    return _fk(path, metres=True)
+    positions, skeleton = _fk(path, metres=True)
+
+    # Honour a sub-clip's frame window, so joint data lines up with the root
+    # trajectory the clip carries. Skipping this would silently mismatch lengths.
+    if isinstance(clip, MotionClip) and clip.frame_range is not None:
+        start, end = clip.frame_range
+        positions = positions[start:end]
+
+    return positions, skeleton
 
 
 def _joint_heights(positions: np.ndarray, joint: int) -> np.ndarray:

@@ -62,6 +62,12 @@ class MotionClip:
                         retained for pose/orientation features
         sample_dt       seconds between consecutive frames
         frame_count     number of frames
+        frame_range     (start, end) window this clip covers within the source
+                        file, or None for the whole file. Sub-clips need this so
+                        that joint data read from disk is sliced consistently
+                        with the stored root trajectory; otherwise forward
+                        kinematics would return the full clip's joints and the
+                        two would silently disagree in length.
     """
 
     path: Path
@@ -71,6 +77,7 @@ class MotionClip:
     accelerations: np.ndarray
     rotations: np.ndarray
     sample_dt: float
+    frame_range: tuple[int, int] | None = None
 
     @property
     def frame_count(self) -> int:
