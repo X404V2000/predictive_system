@@ -91,6 +91,63 @@ observed on real motion capture, which is how the process-noise values were set.
 At realistic noise the reported standard deviation is within roughly a factor of
 two of observed error.
 
+## Live demo
+
+Runs the whole pipeline continuously: pose source -> trajectory (WHERE) ->
+action (WHAT).
+
+```bash
+python3 tools/live_demo.py                              # synthetic walker
+python3 tools/live_demo.py --source mocap --clip 013/13_05
+python3 tools/live_demo.py --speed 2.0 --frames 300 --realtime
+python3 tools/live_demo.py --json                       # machine-readable
+```
+
+Output shows both layers, plus a `warmup` marker:
+
+```
+frame  time    now (x,y,z)                 ahead   sigma    motion model          | action
+[    2] t=  0.07s warmup now=(  0.007, 0.914,  0.080) ahead=0.613m sd=2.492 constant_acceleration | collecting...
+[   62] t=  2.07s        now=( -0.013, 0.880,  2.480) ahead=0.607m sd=0.223 constant_acceleration | locomote    p=0.82
+[   67] t=  2.23s        now=(  0.001, 0.903,  2.680) ahead=0.600m sd=0.223 constant_acceleration | locomote    p=0.49 (!)
+```
+
+### Pose sources are pluggable
+
+`pose.py` defines one interface with swappable drivers, so the pipeline does not
+depend on how skeletons are obtained. Two ship today:
+
+- **`SyntheticPoseSource`** — a stylised but anatomically valid gait (hip 0.90 m,
+  head 0.65 m above hips, feet on the floor, travel at the requested speed). It
+  exists so the pipeline runs end to end without a pose model.
+- **`MocapPlaybackSource`** — replays a recorded clip as a live stream, for
+  exercising the pipeline against real skeletons.
+
+**A real webcam pose estimator is NOT included.** Full-body pose from an RGB
+camera needs a trained model (MediaPipe, MoveNet, RTMPose), none of which is
+installed. Adding one means implementing a single interface:
+
+```python
+class MyWebcamPose:
+    name = "webcam"
+    def start(self): ...
+    def read(self) -> PoseFrame | None:   # (31, 3) metres, CMU order
+        ...
+    def close(self): ...
+```
+
+`reorder_to_cmu()` maps another skeleton's joint names into the required order.
+A source that emits the wrong joint order or units will fail loudly on the first
+frame rather than producing plausible-looking wrong predictions.
+
+### Warm-up
+
+The filter starts with a large covariance because one position sample says
+nothing about velocity. Projections made before about 20 samples are therefore
+unreliable, and the response carries `warming_up: true` for that period rather
+than presenting an unearned confident-looking point. On real motion capture the
+reported sigma falls from ~9 m to under 1 m over those first samples.
+
 ## Action recognition
 
 A second layer classifies *what* the body is doing, from 18 motion features
@@ -231,7 +288,7 @@ horizon is capped at 2 s.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 126 tests
+pytest                                   # 142 tests
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 

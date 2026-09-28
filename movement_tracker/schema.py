@@ -159,6 +159,16 @@ class PredictionOutput(BaseModel):
         ),
     )
 
+    warming_up: bool = Field(
+        default=False,
+        description=(
+            "True while the filter is still converging, which takes about 20 "
+            "samples. Early projections are unreliable because the initial "
+            "covariance is large: one position sample says nothing about velocity. "
+            "Treat the point as indicative, not actionable, until this clears."
+        ),
+    )
+
     trajectory: list[TrajectoryPoint] | None = Field(
         default=None,
         description=(

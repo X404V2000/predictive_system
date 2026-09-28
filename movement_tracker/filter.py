@@ -68,6 +68,17 @@ _MOTION_MODEL_NOISE: dict[MotionModel, float] = {
 # genuine slow movement during the moment before the model switches.
 STATIONARY_CORRELATION_TIME: float = 0.5
 
+# Initial variance for every state before anything has been observed, in the
+# squared units of that state. Deliberately large: the first position sample
+# carries no information about velocity or acceleration.
+#
+# It cannot simply be set small for position, even though position IS observed,
+# because the prior would then be inconsistent with the (large) velocity prior
+# and the filter would trust a zero-velocity guess. Making it small made the first
+# projection swing 35 m off the true path. The warm-up transient is trimmed by
+# the tracker instead, which suppresses projections until the estimate settles.
+_INITIAL_POSITION_VARIANCE: float = 100.0
+
 # Postural drift speed for an apparently motionless person (m/s). A seated or
 # standing human is never perfectly still: the hip still moves ~0.15 m/s while
 # shifting posture. The stationary model otherwise assumes zero motion, which
@@ -104,7 +115,7 @@ class ExtendedKalmanFilter3D:
         # Current state estimate [9x1] and covariance [9x9]. Initial uncertainty
         # is large because one observation says nothing about velocity.
         self.x: np.ndarray = np.zeros((9, 1), dtype=np.float64)
-        self.P: np.ndarray = np.eye(9, dtype=np.float64) * 100.0
+        self.P: np.ndarray = np.eye(9, dtype=np.float64) * _INITIAL_POSITION_VARIANCE
 
         self.measurement_noise_std: float = measurement_noise_std
 

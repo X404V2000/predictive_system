@@ -135,6 +135,7 @@ class KinematicPredictor:
         position_covariance: np.ndarray | None = None,
         motion_model: str = "constant_acceleration",
         vertical_axis: int = 1,
+        warming_up: bool = False,
     ) -> PredictionOutput:
         """
         Projects the state forward by `dt` seconds and reports the result with
@@ -174,6 +175,7 @@ class KinematicPredictor:
             confidence_radius_95=radius_95,
             position_covariance=[float(value) for value in covariance.ravel()],
             motion_model=motion_model,
+            warming_up=warming_up,
         )
 
     # -- multi-step trajectory ---------------------------------------------
