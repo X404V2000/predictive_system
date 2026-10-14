@@ -1,4 +1,4 @@
-# Python
+# --- Python build artefacts -----------------------------------------------
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -8,19 +8,86 @@ htmlcov/
 .venv/
 venv/
 
-# Large local datasets — never commit motion-capture data
+# --- large local data, never committed ------------------------------------
+# Motion-capture datasets are re-downloadable from the CMU mirror, and the pose
+# weights from OpenCV Zoo via tools/download_models.sh, which pins the checksum
+# of each file. Neither belongs in version control.
 training_data/
+models/*.onnx
+models/*.partial
 *.mp4
 *.avi
 
-# Editor / OS noise
+# --- editor and OS noise --------------------------------------------------
 .DS_Store
 *.swp
+.idea/
+.vscode/
 
-# Motion-capture datasets (large; re-downloadable via the CMU mirror)
-training_data/cmu_mocap/
+# --- secrets, credentials and local environment ---------------------------
+#
+# Nothing here is currently used by the project. It exists because the cost of a
+# leaked credential is high and the cost of listing the usual paths is near zero.
+# A secret committed even once stays in history and must be ROTATED, not merely
+# deleted: the old value remains recoverable from every clone.
+#
+# If a secret is ever needed, read it from the environment at runtime rather than
+# from a file in this tree. python-dotenv is already an indirect dependency if a
+# .env workflow is preferred; the file itself must stay out of git.
 
-# Pose estimation weights (17 MB of binaries). Fetch and verify with
-# tools/download_models.sh, which pins the checksum of each file.
-models/*.onnx
-models/*.partial
+# environment files
+.env
+.env.*
+!.env.example
+*.env
+.envrc
+
+# key material
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
+
+# credential stores
+.credentials
+.credentials.*
+*credentials.json
+*service-account*.json
+client_secret*.json
+.netrc
+_auth
+.git-credentials
+
+# token and secret scratch files
+*.token
+*.secret
+secrets.txt
+secrets.yaml
+secrets.yml
+tokens.txt
+
+# cloud provider configuration
+.aws/
+.azure/
+.gcloud/
+config/gcloud/
+kubeconfig
+.kube/
+
+# certificates
+*.crt
+*.cer
+*.der
+
+# local configuration that may carry a secret
+config.local.*
+*.local.yaml
+*.local.yml
+*.local.json

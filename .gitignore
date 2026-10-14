@@ -1,0 +1,22 @@
+# Repository-level ignores.
+#
+# The application-level rules live in movement_tracker/.gitignore. This file only
+# covers artefacts created at the repository root, which that file cannot reach.
+
+# Test and tooling caches created when pytest runs from the repository root.
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Environment files, in case a virtualenv or .env is created at this level.
+venv/
+.venv/
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise.
+.DS_Store
+*.swp
+.idea/
+.vscode/
