@@ -12,3 +12,7 @@ fastapi==0.141.1
 uvicorn[standard]==0.53.0
 numpy==2.5.3
 pydantic==2.13.5
+# Imported by the webcam pose path (blazepose.py, tools/camera_check.py). This was
+# missing because a Debian system already had OpenCV installed, so nothing forced
+# the declaration. On a clean runner the import fails without it.
+opencv-python-headless==4.10.0.84

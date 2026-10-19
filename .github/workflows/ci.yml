@@ -70,7 +70,7 @@ jobs:
 
       - name: Verify dependency installation
         # A silent skip of this step is how the earlier workflow appeared to work.
-        run: python -c "import numpy, fastapi, cv2, pytest; print('deps ok')"
+        run: python -c "import numpy, fastapi, pytest, cv2; print('deps ok')"
 
       - name: Lint (syntax and undefined names)
         run: |
