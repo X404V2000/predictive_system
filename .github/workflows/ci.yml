@@ -1,0 +1,210 @@
+name: CI
+
+# What this workflow does and does not run
+# ----------------------------------------
+# It tests the PRODUCT code in movement_tracker/. It does not run the agent team in
+# agents_team/: those tests read a private team specification and a registry roster
+# that are deliberately not in git, so a clean checkout cannot run them. They are
+# run locally with `python3 agents_team/testenv/run_all.py`.
+#
+# The dataset (162 MB of BVH) and the models (17 MB of ONNX) are git-ignored. The
+# jobs that need them restore them from cache or skip, and say which. A skipped
+# job is visible in the run summary; it is not silently green.
+
+on:
+  push:
+    branches: ["main"]
+    # Avoid burning CI minutes on changes that cannot affect the product,
+    # including this repository's own agent tooling.
+    paths-ignore:
+      - "agents_team/**"
+      - "hiring_dir/**"
+      - "**/*.md"
+  pull_request:
+    branches: ["main"]
+    paths-ignore:
+      - "agents_team/**"
+      - "hiring_dir/**"
+      - "**/*.md"
+
+# Cancel a superseded run of the same branch: a push while a previous run is still
+# going makes the earlier result worthless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # All project code lives here. Every step runs there unless it says otherwise.
+    # Running from the repository root was the original defect: `pytest tests/`
+    # collected zero tests and exited 0, so CI passed without testing anything.
+    working-directory: movement_tracker
+
+jobs:
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          # 3.13, not 3.10: numpy==2.5.3 has no wheel for Python 3.10, so the
+          # dependency install fails outright. The development environment is 3.13.
+          python-version: "3.13"
+          # This caching is real. The duplicate actions/cache step in the earlier
+          # version was redundant and has been removed.
+          cache: "pip"
+          cache-dependency-path: movement_tracker/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Verify dependency installation
+        # A silent skip of this step is how the earlier workflow appeared to work.
+        run: python -c "import numpy, fastapi, cv2, pytest; print('deps ok')"
+
+      - name: Lint (syntax and undefined names)
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics \
+            --exclude=venv,.venv,__pycache__,models,training_data
+
+      - name: Lint (style, advisory)
+        # Kept advisory on purpose, and labelled as such. Reporting style problems
+        # without failing the build is a choice; pretending they block would be a lie.
+        continue-on-error: true
+        run: |
+          flake8 . --count --max-complexity=10 --max-line-length=127 --statistics \
+            --exclude=venv,.venv,__pycache__,models,training_data
+
+      - name: Restore mocap dataset
+        id: dataset
+        uses: actions/cache/restore@v4
+        with:
+          path: movement_tracker/training_data
+          key: cmu-mocap-bvh-v1
+
+      - name: Verify dataset
+        if: steps.dataset.outputs.cache-hit == 'true'
+        run: bash tools/download_dataset.sh --verify
+
+      - name: Run tests
+        run: |
+          # --doctest-modules was removed: it imports every module, and
+          # tools/explore_actions.py runs at import time against the dataset,
+          # aborting collection so that NO tests ran at all.
+          pytest tests/ -v --junitxml=junit/test-results.xml
+
+      - name: Verify the tests actually ran
+        # The failure this guards against: "no tests collected" exits 0 and looks
+        # like a pass. A pipeline that can go green having run nothing is worse than
+        # one that fails.
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("junit/test-results.xml")
+          if not report.exists():
+              sys.exit("no JUnit report: pytest did not run")
+          root = ET.parse(report).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          tests = int(suite.get("tests", 0))
+          failures = int(suite.get("failures", 0)) + int(suite.get("errors", 0))
+          print(f"collected {tests} test(s), {failures} failure(s)")
+          if tests == 0:
+              sys.exit("zero tests collected: this is a false pass")
+          if failures:
+              sys.exit(f"{failures} test(s) failed")
+          PY
+
+      - name: Report dataset absence honestly
+        if: steps.dataset.outputs.cache-hit != 'true'
+        run: |
+          echo "::notice title=Dataset unavailable::The 162 MB mocap dataset was not \
+          restored from cache. Dataset-dependent tests should have skipped. They are \
+          NOT verified in this run."
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: movement_tracker/junit/
+
+  docker:
+    name: Build Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          # The Dockerfile lives in movement_tracker/, so that is the context. Using
+          # the repository root sent a different tree than anyone builds locally.
+          context: movement_tracker
+          file: movement_tracker/Dockerfile
+          push: false
+          load: true
+          tags: predictive-system:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        # Building an image is not the same as having a working service. The earlier
+        # workflow stopped at "it built".
+        #
+        # The service has no /health route; it exposes /predict and /predict/action
+        # plus FastAPI's generated /openapi.json. The OpenAPI document is used as the
+        # readiness signal, which is what the image's own healthcheck does.
+        run: |
+          docker run --rm -d --name smoke -p 8000:8000 predictive-system:ci
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/openapi.json >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "service did not become ready within 60s"
+            docker logs smoke || true
+            docker stop smoke >/dev/null 2>&1 || true
+            exit 1
+          fi
+
+          echo "service ready"
+          # A real request, not just a reachable port: prediction is the whole point.
+          curl -fsS -X POST http://localhost:8000/predict \
+            -H 'Content-Type: application/json' \
+            -d '{"entity_id":"ci-1","x":0,"y":0,"z":0,"timestamp":0}' \
+            -o response.json
+          python - <<'PY'
+          import json, sys
+          payload = json.load(open("response.json"))
+          print("prediction keys:", sorted(payload))
+          for required in ("x", "y", "z", "confidence_radius_95"):
+              if required not in payload:
+                  sys.exit(f"prediction response missing {required!r}")
+          print("smoke test passed")
+          PY
+          docker stop smoke >/dev/null

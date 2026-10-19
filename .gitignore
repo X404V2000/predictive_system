@@ -20,3 +20,6 @@ venv/
 *.swp
 .idea/
 .vscode/
+
+# Hiring secrets
+hiring_dir/
