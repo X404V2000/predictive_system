@@ -27,6 +27,13 @@ import numpy as np
 from mocap import MotionClip
 from physics import derive_motion, yaw_rate
 
+# Imported at runtime, not under TYPE_CHECKING. The return annotation of
+# load_joint_positions names Skeleton, and a TYPE_CHECKING-only import leaves that
+# name undefined at runtime, so typing.get_type_hints() raises NameError even though
+# the lint gate passes. skeleton.py imports nothing from this module, so there is no
+# cycle to avoid.
+from skeleton import Skeleton
+
 # Joint indices in the CMU skeleton, verified by parsing the BVH hierarchy
 # directly rather than assumed. The cgspeed conversion defines 31 joints in this
 # order, beginning Hips, LHipJoint, LeftUpLeg, LeftLeg, LeftFoot, ...
