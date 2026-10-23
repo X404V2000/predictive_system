@@ -378,7 +378,7 @@ horizon is capped at 2 s.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pytest                                   # 157 tests
+pytest                                   # 159 tests across 19 files
 uvicorn main:app --reload                # http://127.0.0.1:8000/docs
 ```
 
@@ -421,7 +421,10 @@ frame (optionally including `time_horizon`). Malformed frames receive an in-band
 
 - Prediction horizon is bounded to 2 s — beyond that a purely kinematic
   projection stops describing human motion.
-- Prediction is a point estimate; uncertainty output is planned (Phase B1).
+- Uncertainty is propagated through the motion model to the horizon (see
+  [Uncertainty](#uncertainty)). At 2 s the model is still over-confident: real
+  error outgrows predicted error there, because that is model error rather than
+  measurement noise. This is why the horizon is capped.
 - Motion models currently cover yaw rotation only (Phase B3 adds pitch/roll).
 
 ## Data
